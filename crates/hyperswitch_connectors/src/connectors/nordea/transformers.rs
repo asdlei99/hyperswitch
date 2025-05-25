@@ -160,7 +160,7 @@ fn get_creditor_account_from_metadata(
         // Merchant is the beneficiary in this case
         name: router_data.request.merchant_account_id.clone(),
         message: None,
-        // Refernce is optional field in the examples given in the doc.
+        // Reference is optional field in the examples given in the doc.
         // It is considered as a required field in the api contract
         reference: CreditorAccountReference {
             creditor_reference_type: "RF".to_string(), // Assuming RF for SEPA payments
