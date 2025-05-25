@@ -31,12 +31,14 @@ pub enum AccessScope {
 #[derive(Debug, Serialize)]
 pub struct NordeaOAuthTokenExchangeRequest {
     pub grant_type: GrantType,
+    /// authorization_code flow
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<Secret<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub redirect_uri: Option<String>,
+    /// refresh_token flow
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub refresh_token: Option<Secret<String>>, // For refresh_token flow
+    pub refresh_token: Option<Secret<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -95,7 +97,7 @@ pub struct CreditorAccount {
     /// Max length: FI SEPA: 30; SE: 35; DK: Not use (Mandatory for Instant/Express payments: 70);
     /// NO: 30 (mandatory for Straksbetaling/Express payments).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    pub name: Option<Secret<String>>,
     /// Creditor reference number
     pub reference: CreditorAccountReference,
 }
@@ -113,13 +115,13 @@ pub struct DebitorAccount {
 #[derive(Debug, Serialize, PartialEq)]
 pub struct InstructedAmount {
     /// Monetary amount of the payment. Max (digits+decimals): FI SEPA: (9+2); SE:(11+2); DK:(7+2); NO:(7+2)
-    amount: StringMajorUnit,
+    pub amount: StringMajorUnit,
     /// Currency code according to ISO 4217.
     /// NB: Possible value depends on the type of the payment.
     /// For domestic payment it should be same as debtor local currency,
     /// for SEPA it must be EUR,
     /// for cross border it can be Currency code according to ISO 4217.
-    currency: api_models::enums::Currency,
+    pub currency: api_models::enums::Currency,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -142,6 +144,7 @@ pub enum RecurrenceType {
 
 #[derive(Debug, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)] // This is an optional field and not having it is fine
 pub enum FundsAvailabilityRequest {
     True,
     False,
@@ -282,14 +285,6 @@ pub struct NordeaPaymentsRequest {
     /// For further details on urgencies and cut-offs, refer to the Nordea website. Value 'sameday' is marked as deprecated and will be removed in the future.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub urgency: Option<PaymentsUrgency>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct NordeaConnectorMetadata {
-    #[serde(rename = "value")]
-    pub creditor_account_value: Secret<String>,
-    #[serde(rename = "_type")]
-    pub creditor_account_type: String,
 }
 
 //TODO: Fill the struct with respective fields

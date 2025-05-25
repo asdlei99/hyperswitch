@@ -109,7 +109,7 @@ pub mod date_time {
             .encode();
         now().assume_utc().format(&Iso8601::<ISO_CONFIG>)
     }
-    
+
     /// Return the current date and time in UTC formatted as "ddd, DD MMM YYYY HH:mm:ss GMT".
     pub fn now_rfc7231_http_date() -> Result<String, time::error::Format> {
         let now_utc = OffsetDateTime::now_utc();

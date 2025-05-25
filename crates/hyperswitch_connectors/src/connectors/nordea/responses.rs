@@ -16,7 +16,7 @@ pub struct NordeaOAuthTokenExchangeResponse {
     pub token_type: Option<String>,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "PascalCase")]
 pub enum NordeaPaymentStatus {
     #[default]
@@ -50,9 +50,9 @@ pub struct NordeaGroupHeader {
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct NordeaResponseLinks {
     /// Describes the nature of the link, e.g. 'details' for a link to the detailed information of a listed resource.
-    rel: Option<String>,
+    pub rel: Option<String>,
     /// Relative path to the linked resource
-    href: Option<String>,
+    pub href: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -167,7 +167,7 @@ pub struct NordeaRefundResponse {
 pub struct NordeaOriginalRequest {
     /// Original request url
     #[serde(rename = "url")]
-    nordea_url: Option<String>,
+    pub nordea_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -188,10 +188,10 @@ pub struct NordeaErrorBody {
     // Serde JSON because connector returns an `(item)` object in failures array object
     /// More details on the occurred error: Validation error
     #[serde(rename = "failures")]
-    nordea_failures: Option<Vec<NordeaFailures>>,
+    pub nordea_failures: Option<Vec<NordeaFailures>>,
     /// Original request information
     #[serde(rename = "request")]
-    nordea_request: Option<NordeaOriginalRequest>,
+    pub nordea_request: Option<NordeaOriginalRequest>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]

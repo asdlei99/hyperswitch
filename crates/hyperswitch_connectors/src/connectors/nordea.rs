@@ -3,6 +3,7 @@ mod responses;
 pub mod transformers;
 
 use base64::Engine;
+use common_enums::enums;
 use common_utils::{
     consts, date_time,
     errors::CustomResult,
@@ -23,10 +24,13 @@ use hyperswitch_domain_models::{
         PaymentsCancelData, PaymentsCaptureData, PaymentsSessionData, PaymentsSyncData,
         RefundsData, SetupMandateRequestData,
     },
-    router_response_types::{PaymentsResponseData, RefundsResponseData},
+    router_response_types::{
+        ConnectorInfo, PaymentMethodDetails, PaymentsResponseData, RefundsResponseData,
+        SupportedPaymentMethods, SupportedPaymentMethodsExt,
+    },
     types::{
-        PaymentsAuthorizeRouterData, PaymentsCaptureRouterData, PaymentsSyncRouterData,
-        RefundSyncRouterData, RefundsRouterData,
+        PaymentsAuthorizeRouterData, PaymentsSyncRouterData, RefundSyncRouterData,
+        RefundsRouterData,
     },
 };
 use hyperswitch_interfaces::{
@@ -35,17 +39,21 @@ use hyperswitch_interfaces::{
         ConnectorValidation,
     },
     configs::Connectors,
+    consts::{NO_ERROR_CODE, NO_ERROR_MESSAGE},
     errors,
     events::connector_api_logs::ConnectorEvent,
     types::{self, Response},
     webhooks,
 };
+use lazy_static::lazy_static;
 use masking::{ExposeInterface, Mask, PeekInterface};
 use requests::{NordeaPaymentsRequest, NordeaRefundRequest, NordeaRouterData};
 use responses::{NordeaPaymentsResponse, NordeaRefundResponse};
-use ring::digest;
-use ring::signature::{RsaKeyPair, RSA_PKCS1_SHA256};
-use transformers::NordeaAuthType;
+use ring::{
+    digest,
+    signature::{RsaKeyPair, RSA_PKCS1_SHA256},
+};
+use transformers::{get_error_data, NordeaAuthType};
 use url::Url;
 
 use crate::{constants::headers, types::ResponseRouterData, utils};
@@ -53,6 +61,15 @@ use crate::{constants::headers, types::ResponseRouterData, utils};
 #[derive(Clone)]
 pub struct Nordea {
     amount_converter: &'static (dyn AmountConvertor<Output = StringMajorUnit> + Sync),
+}
+
+struct SignatureParams<'a> {
+    content_type: &'a str,
+    host: &'a str,
+    path: &'a str,
+    payload_digest: Option<&'a str>,
+    date: &'a str,
+    http_method: Method,
 }
 
 impl Nordea {
@@ -67,31 +84,30 @@ impl Nordea {
         consts::BASE64_ENGINE.encode(payload_digest)
     }
 
-    pub fn generate_signature(
+    // For non-production environments, signature generation can be skipped and instead `SKIP_SIGNATURE_VALIDATION_FOR_SANDBOX` can be passed.
+    fn generate_signature(
         &self,
         auth: &NordeaAuthType,
-        content_type: &str,
-        host: &str,
-        path: &str,
-        payload_digest: Option<&str>,
-        date: &str,
-        http_method: Method,
+        signature_params: SignatureParams<'_>,
     ) -> CustomResult<String, errors::ConnectorError> {
         const REQUEST_WITHOUT_CONTENT_HEADERS: &str =
             "(request-target) x-nordea-originating-host x-nordea-originating-date";
         const REQUEST_WITH_CONTENT_HEADERS: &str = "(request-target) x-nordea-originating-host x-nordea-originating-date content-type digest";
 
-        let method_string = http_method.to_string().to_lowercase();
+        let method_string = signature_params.http_method.to_string().to_lowercase();
         let mut normalized_string = format!(
             "(request-target) {} {}\nx-nordea-originating-host: {}\nx-nordea-originating-date: {}",
-            method_string, path, host, date
+            method_string, signature_params.path, signature_params.host, signature_params.date
         );
 
-        let headers = if matches!(http_method, Method::Post | Method::Put | Method::Patch) {
-            let digest = payload_digest.unwrap_or("");
+        let headers = if matches!(
+            signature_params.http_method,
+            Method::Post | Method::Put | Method::Patch
+        ) {
+            let digest = signature_params.payload_digest.unwrap_or("");
             normalized_string.push_str(&format!(
                 "\ncontent-type: {}\ndigest: sha-256={}",
-                content_type, digest
+                signature_params.content_type, digest
             ));
             REQUEST_WITH_CONTENT_HEADERS
         } else {
@@ -105,7 +121,7 @@ impl Nordea {
                 })?;
             let private_key_der_contents = private_key_der.contents();
 
-            let key_pair = RsaKeyPair::from_der(&private_key_der_contents).change_context(
+            let key_pair = RsaKeyPair::from_der(private_key_der_contents).change_context(
                 errors::ConnectorError::InvalidConnectorConfig {
                     config: "eIDAS Private Key",
                 },
@@ -230,12 +246,14 @@ where
 
             let signature = self.generate_signature(
                 &auth,
-                &content_type,
-                &nordea_host,
-                &path,
-                Some(&sha256_digest),
-                &nordea_origin_date,
-                http_method,
+                SignatureParams {
+                    content_type: &content_type,
+                    host: &nordea_host,
+                    path,
+                    payload_digest: Some(&sha256_digest),
+                    date: &nordea_origin_date,
+                    http_method,
+                },
             )?;
 
             required_headers.push(("Signature".to_string(), signature.into_masked()));
@@ -243,12 +261,14 @@ where
             // Generate signature without digest for GET requests
             let signature = self.generate_signature(
                 &auth,
-                &content_type,
-                &nordea_host,
-                &path_with_query,
-                None,
-                &nordea_origin_date,
-                http_method,
+                SignatureParams {
+                    content_type: &content_type,
+                    host: &nordea_host,
+                    path: &path_with_query,
+                    payload_digest: None,
+                    date: &nordea_origin_date,
+                    http_method,
+                },
             )?;
 
             required_headers.push(("Signature".to_string(), signature.into_masked()));
@@ -290,9 +310,14 @@ impl ConnectorCommon for Nordea {
 
         Ok(ErrorResponse {
             status_code: res.status_code,
-            code: response.code,
-            message: response.message,
-            reason: response.reason,
+            code: get_error_data(response.error.as_ref())
+                .and_then(|failure| failure.code.clone())
+                .unwrap_or(NO_ERROR_CODE.to_string()),
+            message: get_error_data(response.error.as_ref())
+                .and_then(|failure| failure.failure_type.clone())
+                .unwrap_or(NO_ERROR_MESSAGE.to_string()),
+            reason: get_error_data(response.error.as_ref())
+                .and_then(|failure| failure.description.clone()),
             attempt_status: None,
             connector_transaction_id: None,
             network_decline_code: None,
@@ -310,7 +335,38 @@ impl ConnectorIntegration<Session, PaymentsSessionData, PaymentsResponseData> fo
     //TODO: implement sessions flow
 }
 
-impl ConnectorIntegration<AccessTokenAuth, AccessTokenRequestData, AccessToken> for Nordea {}
+impl ConnectorIntegration<AccessTokenAuth, AccessTokenRequestData, AccessToken> for Nordea {
+    // TO-DO: Implement Access Token flow
+    // Nordea has 2 types of access token flows:
+    // 1. Redirect access authorization flow (2 steps) <- we're interested in this one given the simplicity and it requires a core change (may be, introduce a new flow)
+    //      Initiation of access authorisation.
+    //      Receipt of an authorisation code.
+    //      Exchange of the authorisation code for an access token and a refresh token.
+    //          The refresh token can be used to obtain a new access token after its expiry.
+    // 2. Decoupled access authorization flow (6 steps)
+    //      Initiation of customer authentication
+    //      Polling of the authentication status
+    //      Receipt of the first authorisation code
+    //      Initiation of the access authorisation
+    //      Receipt of the second authorisation code
+    //      Exchange of the second authorisation code for an access token and a refresh token.
+    //          The refresh token can be used to obtain a new access token after its expiry.
+
+    // Redirect access authorization flow:
+    // 1. Hit `/authorize` endpoint to get a `code` (one time use only and is never needed once used to get `access_token`)
+    // 2. Use the `code` to hit `authorize/token` endpoint to get an `access_token` and `refresh_token` depending on the grant_type (`authorization_code` & `refresh_token`) that is passed.
+    //    `grant_type` should be `authorization_code` for the first step and `refresh_token` for the subsequent calls.
+    //
+    // FAQ:
+    // Access is valid for 3600 seconds
+    // Refresh token is long lived (depends on `duration` field in minutes passed in `/authorize` call), can only be used once
+    //
+    // Flow would be like (POST):
+    // 1. Check if we already have a refresh token and is not expired (depends on the duration passed during the retrieval of `code` -- max 180 days).
+    //      1.1. If yes, use it to get an access token after access token expires.
+    //      1.2. If no, hit `/authorize` endpoint to get a `code`.
+    //          1.2.1 If `code` is received, use it to hit `authorize/token` endpoint to get an `access_token` and `refresh_token`.
+}
 
 impl ConnectorIntegration<SetupMandate, SetupMandateRequestData, PaymentsResponseData> for Nordea {}
 
@@ -332,7 +388,11 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
         _req: &PaymentsAuthorizeRouterData,
         _connectors: &Connectors,
     ) -> CustomResult<String, errors::ConnectorError> {
-        Err(errors::ConnectorError::NotImplemented("get_url method".to_string()).into())
+        Ok(format!(
+            "{}{}",
+            self.base_url(_connectors),
+            "/personal/v5/payments/sepa-credit-transfer"
+        ))
     }
 
     fn get_request_body(
@@ -383,8 +443,10 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
             .response
             .parse_struct("NordeaPaymentsAuthorizeResponse")
             .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
+
         event_builder.map(|i| i.set_response_body(&response));
         router_env::logger::info!(connector_response=?response);
+
         RouterData::try_from(ResponseRouterData {
             response,
             data: data.clone(),
@@ -416,10 +478,20 @@ impl ConnectorIntegration<PSync, PaymentsSyncData, PaymentsResponseData> for Nor
 
     fn get_url(
         &self,
-        _req: &PaymentsSyncRouterData,
+        req: &PaymentsSyncRouterData,
         _connectors: &Connectors,
     ) -> CustomResult<String, errors::ConnectorError> {
-        Err(errors::ConnectorError::NotImplemented("get_url method".to_string()).into())
+        let id = req.request.connector_transaction_id.clone();
+        let connector_transaction_id = id
+            .get_connector_transaction_id()
+            .change_context(errors::ConnectorError::MissingConnectorTransactionID)?;
+
+        Ok(format!(
+            "{}{}{}",
+            self.base_url(_connectors),
+            "/personal/v5/payments/",
+            connector_transaction_id
+        ))
     }
 
     fn build_request(
@@ -465,86 +537,7 @@ impl ConnectorIntegration<PSync, PaymentsSyncData, PaymentsResponseData> for Nor
     }
 }
 
-impl ConnectorIntegration<Capture, PaymentsCaptureData, PaymentsResponseData> for Nordea {
-    fn get_headers(
-        &self,
-        req: &PaymentsCaptureRouterData,
-        connectors: &Connectors,
-    ) -> CustomResult<Vec<(String, masking::Maskable<String>)>, errors::ConnectorError> {
-        self.build_headers(req, connectors)
-    }
-
-    fn get_content_type(&self) -> &'static str {
-        self.common_get_content_type()
-    }
-
-    fn get_url(
-        &self,
-        _req: &PaymentsCaptureRouterData,
-        connectors: &Connectors,
-    ) -> CustomResult<String, errors::ConnectorError> {
-        Ok(format!(
-            "{}{}",
-            self.base_url(connectors),
-            "personal/v4/payments/sepa/confirm"
-        ))
-    }
-
-    fn get_request_body(
-        &self,
-        _req: &PaymentsCaptureRouterData,
-        _connectors: &Connectors,
-    ) -> CustomResult<RequestContent, errors::ConnectorError> {
-        Err(errors::ConnectorError::NotImplemented("get_request_body method".to_string()).into())
-    }
-
-    fn build_request(
-        &self,
-        req: &PaymentsCaptureRouterData,
-        connectors: &Connectors,
-    ) -> CustomResult<Option<Request>, errors::ConnectorError> {
-        Ok(Some(
-            RequestBuilder::new()
-                .method(Method::Post)
-                .url(&types::PaymentsCaptureType::get_url(self, req, connectors)?)
-                .attach_default_headers()
-                .headers(types::PaymentsCaptureType::get_headers(
-                    self, req, connectors,
-                )?)
-                .set_body(types::PaymentsCaptureType::get_request_body(
-                    self, req, connectors,
-                )?)
-                .build(),
-        ))
-    }
-
-    fn handle_response(
-        &self,
-        data: &PaymentsCaptureRouterData,
-        event_builder: Option<&mut ConnectorEvent>,
-        res: Response,
-    ) -> CustomResult<PaymentsCaptureRouterData, errors::ConnectorError> {
-        let response: NordeaPaymentsResponse = res
-            .response
-            .parse_struct("NordeaPaymentsCaptureResponse")
-            .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
-        event_builder.map(|i| i.set_response_body(&response));
-        router_env::logger::info!(connector_response=?response);
-        RouterData::try_from(ResponseRouterData {
-            response,
-            data: data.clone(),
-            http_code: res.status_code,
-        })
-    }
-
-    fn get_error_response(
-        &self,
-        res: Response,
-        event_builder: Option<&mut ConnectorEvent>,
-    ) -> CustomResult<ErrorResponse, errors::ConnectorError> {
-        self.build_error_response(res, event_builder)
-    }
-}
+impl ConnectorIntegration<Capture, PaymentsCaptureData, PaymentsResponseData> for Nordea {}
 
 impl ConnectorIntegration<Void, PaymentsCancelData, PaymentsResponseData> for Nordea {}
 
@@ -723,4 +716,49 @@ impl webhooks::IncomingWebhook for Nordea {
     }
 }
 
-impl ConnectorSpecifications for Nordea {}
+lazy_static! {
+    static ref NORDEA_CONNECTOR_INFO: ConnectorInfo = ConnectorInfo {
+        display_name:
+            "Nordea",
+        description:
+            "Nordea is one of the leading financial services group in the Nordics and the preferred choice for millions across the region.",
+        connector_type: enums::PaymentConnectorCategory::PaymentGateway,
+    };
+    static ref NORDEA_SUPPORTED_PAYMENT_METHODS: SupportedPaymentMethods = {
+        let nordea_supported_capture_methods = vec![
+            enums::CaptureMethod::Automatic,
+            enums::CaptureMethod::SequentialAutomatic,
+        ];
+
+        let mut nordea_supported_payment_methods = SupportedPaymentMethods::new();
+
+        nordea_supported_payment_methods.add(
+            enums::PaymentMethod::BankDebit,
+            enums::PaymentMethodType::Sepa,
+            PaymentMethodDetails {
+                mandates: common_enums::FeatureStatus::NotSupported,
+                // Supported only in corporate API (corporate accounts)
+                refunds: common_enums::FeatureStatus::NotSupported,
+                supported_capture_methods: nordea_supported_capture_methods.clone(),
+                specific_features: None,
+            },
+        );
+
+        nordea_supported_payment_methods
+    };
+    static ref NORDEA_SUPPORTED_WEBHOOK_FLOWS: Vec<enums::EventClass> = Vec::new();
+}
+
+impl ConnectorSpecifications for Nordea {
+    fn get_connector_about(&self) -> Option<&'static ConnectorInfo> {
+        Some(&*NORDEA_CONNECTOR_INFO)
+    }
+
+    fn get_supported_payment_methods(&self) -> Option<&'static SupportedPaymentMethods> {
+        Some(&*NORDEA_SUPPORTED_PAYMENT_METHODS)
+    }
+
+    fn get_supported_webhook_flows(&self) -> Option<&'static [enums::EventClass]> {
+        Some(&*NORDEA_SUPPORTED_WEBHOOK_FLOWS)
+    }
+}
