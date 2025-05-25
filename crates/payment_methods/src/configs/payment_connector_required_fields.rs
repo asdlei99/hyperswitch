@@ -2945,6 +2945,10 @@ fn get_bank_debit_required_fields() -> HashMap<enums::PaymentMethodType, Connect
                     Connector::Inespay,
                     fields(vec![], vec![], vec![RequiredField::SepaBankDebitIban]),
                 ),
+                (
+                    Connector::Nordea,
+                    fields(vec![], vec![], vec![RequiredField::SepaBankDebitIban]),
+                ),
             ]),
         ),
         (
