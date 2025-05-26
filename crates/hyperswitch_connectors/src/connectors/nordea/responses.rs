@@ -193,7 +193,7 @@ pub struct NordeaPaymentsConfirmErrorObject {
     /// Error message
     pub error: Option<String>,
     /// Description of the error
-    pub error_descriptino: Option<String>,
+    pub error_description: Option<String>,
     /// Payment id of the payment, the error is associated with
     pub payment_id: Option<String>,
 }
