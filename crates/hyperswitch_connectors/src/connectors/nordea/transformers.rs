@@ -9,17 +9,17 @@ use hyperswitch_domain_models::{
     router_flow_types::refunds::{Execute, RSync},
     router_request_types::ResponseId,
     router_response_types::{PaymentsResponseData, RedirectForm, RefundsResponseData},
-    types::{PaymentsAuthorizeRouterData, RefundsRouterData},
+    types::{PaymentsAuthorizeRouterData, PaymentsPreProcessingRouterData, RefundsRouterData},
 };
 use hyperswitch_interfaces::errors;
 use masking::Secret;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::{
     requests::{
-        AccountNumber, AccountType, CreditorAccount, CreditorAccountReference, DebitorAccount,
-        NordeaOAuthTokenExchangeRequest, NordeaPaymentsRequest, NordeaRefundRequest,
-        NordeaRouterData,
+        AccountNumber, AccountType, CreditorAccount, CreditorAccountReference, CreditorBank,
+        DebitorAccount, NordeaOAuthTokenExchangeRequest, NordeaPaymentsConfirmRequest,
+        NordeaPaymentsRequest, NordeaRefundRequest, NordeaRouterData, PaymentsUrgency,
     },
     responses::{
         NordeaErrorBody, NordeaFailures, NordeaOAuthTokenExchangeResponse, NordeaPaymentStatus,
@@ -141,8 +141,26 @@ impl TryFrom<&str> for AccountType {
     }
 }
 
+impl<'de> Deserialize<'de> for PaymentsUrgency {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?.to_lowercase();
+        match s.as_str() {
+            "standard" => Ok(PaymentsUrgency::Standard),
+            "express" => Ok(PaymentsUrgency::Express),
+            "sameday" => Ok(PaymentsUrgency::Sameday),
+            _ => Err(serde::de::Error::unknown_variant(
+                &s,
+                &["standard", "express", "sameday"],
+            )),
+        }
+    }
+}
+
 fn get_creditor_account_from_metadata(
-    router_data: &PaymentsAuthorizeRouterData,
+    router_data: &PaymentsPreProcessingRouterData,
 ) -> Result<CreditorAccount, Error> {
     let metadata: NordeaConnectorMetadataObject =
         utils::to_connector_meta_from_secret(router_data.connector_meta_data.clone())
@@ -153,13 +171,21 @@ fn get_creditor_account_from_metadata(
         account: AccountNumber {
             account_type: AccountType::try_from(metadata.creditor_account_type.as_str())
                 .unwrap_or(AccountType::Iban),
-            currency: Some(router_data.request.currency),
+            currency: router_data.request.currency,
             value: metadata.creditor_account_value,
         },
         country: router_data.get_optional_billing_country(),
         // Merchant is the beneficiary in this case
-        name: router_data.request.merchant_account_id.clone(),
+        name: None,
         message: None,
+        bank: CreditorBank {
+            address: None,
+            bank_code: None,
+            bank_name: None,
+            business_identifier_code: None,
+            country: router_data.get_billing_country()?,
+        },
+        creditor_address: None,
         // Reference is optional field in the examples given in the doc.
         // It is considered as a required field in the api contract
         reference: CreditorAccountReference {
@@ -170,19 +196,19 @@ fn get_creditor_account_from_metadata(
     Ok(creditor_account)
 }
 
-impl TryFrom<&NordeaRouterData<&PaymentsAuthorizeRouterData>> for NordeaPaymentsRequest {
+impl TryFrom<&NordeaRouterData<&PaymentsPreProcessingRouterData>> for NordeaPaymentsRequest {
     type Error = Error;
     fn try_from(
-        item: &NordeaRouterData<&PaymentsAuthorizeRouterData>,
+        item: &NordeaRouterData<&PaymentsPreProcessingRouterData>,
     ) -> Result<Self, Self::Error> {
         match item.router_data.request.payment_method_data.clone() {
-            PaymentMethodData::BankDebit(bank_debit_data) => match bank_debit_data {
+            Some(PaymentMethodData::BankDebit(bank_debit_data)) => match bank_debit_data {
                 BankDebitData::SepaBankDebit { iban, .. } => {
                     let creditor_account = get_creditor_account_from_metadata(item.router_data)?;
                     let debitor_account = DebitorAccount {
                         account: AccountNumber {
                             account_type: AccountType::Iban,
-                            currency: Some(item.router_data.request.currency),
+                            currency: item.router_data.request.currency,
                             value: iban,
                         },
                         message: item.router_data.description.clone(),
@@ -190,7 +216,11 @@ impl TryFrom<&NordeaRouterData<&PaymentsAuthorizeRouterData>> for NordeaPayments
 
                     let instructed_amount = super::requests::InstructedAmount {
                         amount: item.amount.clone(),
-                        currency: item.router_data.request.currency,
+                        currency: item.router_data.request.currency.ok_or(
+                            errors::ConnectorError::MissingRequiredField {
+                                field_name: "amount",
+                            },
+                        )?,
                     };
 
                     Ok(Self {
@@ -215,27 +245,50 @@ impl TryFrom<&NordeaRouterData<&PaymentsAuthorizeRouterData>> for NordeaPayments
                     .into())
                 }
             },
-            PaymentMethodData::CardRedirect(_)
-            | PaymentMethodData::CardDetailsForNetworkTransactionId(_)
-            | PaymentMethodData::Wallet(_)
-            | PaymentMethodData::PayLater(_)
-            | PaymentMethodData::BankRedirect(_)
-            | PaymentMethodData::BankTransfer(_)
-            | PaymentMethodData::Crypto(_)
-            | PaymentMethodData::MandatePayment
-            | PaymentMethodData::Reward
-            | PaymentMethodData::RealTimePayment(_)
-            | PaymentMethodData::MobilePayment(_)
-            | PaymentMethodData::Upi(_)
-            | PaymentMethodData::Voucher(_)
-            | PaymentMethodData::GiftCard(_)
-            | PaymentMethodData::OpenBanking(_)
-            | PaymentMethodData::CardToken(_)
-            | PaymentMethodData::NetworkToken(_)
-            | PaymentMethodData::Card(_) => {
+            Some(PaymentMethodData::CardRedirect(_))
+            | Some(PaymentMethodData::CardDetailsForNetworkTransactionId(_))
+            | Some(PaymentMethodData::Wallet(_))
+            | Some(PaymentMethodData::PayLater(_))
+            | Some(PaymentMethodData::BankRedirect(_))
+            | Some(PaymentMethodData::BankTransfer(_))
+            | Some(PaymentMethodData::Crypto(_))
+            | Some(PaymentMethodData::MandatePayment)
+            | Some(PaymentMethodData::Reward)
+            | Some(PaymentMethodData::RealTimePayment(_))
+            | Some(PaymentMethodData::MobilePayment(_))
+            | Some(PaymentMethodData::Upi(_))
+            | Some(PaymentMethodData::Voucher(_))
+            | Some(PaymentMethodData::GiftCard(_))
+            | Some(PaymentMethodData::OpenBanking(_))
+            | Some(PaymentMethodData::CardToken(_))
+            | Some(PaymentMethodData::NetworkToken(_))
+            | Some(PaymentMethodData::Card(_))
+            | None => {
                 Err(errors::ConnectorError::NotImplemented("Payment method".to_string()).into())
             }
         }
+    }
+}
+
+impl TryFrom<&NordeaRouterData<&PaymentsAuthorizeRouterData>> for NordeaPaymentsConfirmRequest {
+    type Error = Error;
+    fn try_from(
+        item: &NordeaRouterData<&PaymentsAuthorizeRouterData>,
+    ) -> Result<Self, Self::Error> {
+        let payment_ids = match &item.router_data.response {
+            Ok(response_data) => response_data
+                .get_connector_transaction_id()
+                .map_err(|_| errors::ConnectorError::MissingConnectorTransactionID)?,
+            Err(_) => return Err(errors::ConnectorError::ResponseDeserializationFailed.into()),
+        };
+
+        Ok(Self {
+            authentication_method: None,
+            language: None,
+            payments_ids: vec![payment_ids],
+            redirect_url: None,
+            state: None,
+        })
     }
 }
 

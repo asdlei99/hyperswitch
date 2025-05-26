@@ -18,19 +18,20 @@ use hyperswitch_domain_models::{
         access_token_auth::AccessTokenAuth,
         payments::{Authorize, Capture, PSync, PaymentMethodToken, Session, SetupMandate, Void},
         refunds::{Execute, RSync},
+        PreProcessing,
     },
     router_request_types::{
         AccessTokenRequestData, PaymentMethodTokenizationData, PaymentsAuthorizeData,
-        PaymentsCancelData, PaymentsCaptureData, PaymentsSessionData, PaymentsSyncData,
-        RefundsData, SetupMandateRequestData,
+        PaymentsCancelData, PaymentsCaptureData, PaymentsPreProcessingData, PaymentsSessionData,
+        PaymentsSyncData, RefundsData, SetupMandateRequestData,
     },
     router_response_types::{
         ConnectorInfo, PaymentMethodDetails, PaymentsResponseData, RefundsResponseData,
         SupportedPaymentMethods, SupportedPaymentMethodsExt,
     },
     types::{
-        PaymentsAuthorizeRouterData, PaymentsSyncRouterData, RefundSyncRouterData,
-        RefundsRouterData,
+        PaymentsAuthorizeRouterData, PaymentsPreProcessingRouterData, PaymentsSyncRouterData,
+        RefundSyncRouterData, RefundsRouterData,
     },
 };
 use hyperswitch_interfaces::{
@@ -47,7 +48,9 @@ use hyperswitch_interfaces::{
 };
 use lazy_static::lazy_static;
 use masking::{ExposeInterface, Mask, PeekInterface};
-use requests::{NordeaPaymentsRequest, NordeaRefundRequest, NordeaRouterData};
+use requests::{
+    NordeaPaymentsConfirmRequest, NordeaPaymentsRequest, NordeaRefundRequest, NordeaRouterData,
+};
 use responses::{NordeaPaymentsResponse, NordeaRefundResponse};
 use ring::{
     digest,
@@ -56,7 +59,11 @@ use ring::{
 use transformers::{get_error_data, NordeaAuthType};
 use url::Url;
 
-use crate::{constants::headers, types::ResponseRouterData, utils};
+use crate::{
+    constants::headers,
+    types::ResponseRouterData,
+    utils::{self, PaymentsAuthorizeRequestData},
+};
 
 #[derive(Clone)]
 pub struct Nordea {
@@ -161,6 +168,7 @@ impl api::Refund for Nordea {}
 impl api::RefundExecute for Nordea {}
 impl api::RefundSync for Nordea {}
 impl api::PaymentToken for Nordea {}
+impl api::PaymentsPreProcessing for Nordea {}
 
 impl ConnectorIntegration<PaymentMethodToken, PaymentMethodTokenizationData, PaymentsResponseData>
     for Nordea
@@ -370,13 +378,126 @@ impl ConnectorIntegration<AccessTokenAuth, AccessTokenRequestData, AccessToken> 
 
 impl ConnectorIntegration<SetupMandate, SetupMandateRequestData, PaymentsResponseData> for Nordea {}
 
+impl ConnectorIntegration<PreProcessing, PaymentsPreProcessingData, PaymentsResponseData>
+    for Nordea
+{
+    fn get_headers(
+        &self,
+        req: &PaymentsPreProcessingRouterData,
+        connectors: &Connectors,
+    ) -> CustomResult<Vec<(String, masking::Maskable<String>)>, errors::ConnectorError> {
+        self.build_headers(req, connectors)
+    }
+
+    fn get_content_type(&self) -> &'static str {
+        self.common_get_content_type()
+    }
+
+    fn get_url(
+        &self,
+        _req: &PaymentsPreProcessingRouterData,
+        _connectors: &Connectors,
+    ) -> CustomResult<String, errors::ConnectorError> {
+        Ok(format!(
+            "{}{}",
+            self.base_url(_connectors),
+            "/personal/v5/payments/sepa-credit-transfer"
+        ))
+    }
+
+    fn get_request_body(
+        &self,
+        req: &PaymentsPreProcessingRouterData,
+        _connectors: &Connectors,
+    ) -> CustomResult<RequestContent, errors::ConnectorError> {
+        let minor_amount =
+            req.request
+                .minor_amount
+                .ok_or(errors::ConnectorError::MissingRequiredField {
+                    field_name: "minor_amount",
+                })?;
+        let currency =
+            req.request
+                .currency
+                .ok_or(errors::ConnectorError::MissingRequiredField {
+                    field_name: "currency",
+                })?;
+
+        let amount = utils::convert_amount(self.amount_converter, minor_amount, currency)?;
+        let connector_router_data = NordeaRouterData::from((amount, req));
+        let connector_req = NordeaPaymentsRequest::try_from(&connector_router_data)?;
+        Ok(RequestContent::Json(Box::new(connector_req)))
+    }
+
+    fn build_request(
+        &self,
+        req: &PaymentsPreProcessingRouterData,
+        connectors: &Connectors,
+    ) -> CustomResult<Option<Request>, errors::ConnectorError> {
+        Ok(Some(
+            RequestBuilder::new()
+                .method(Method::Post)
+                .url(&types::PaymentsPreProcessingType::get_url(
+                    self, req, connectors,
+                )?)
+                .attach_default_headers()
+                .headers(types::PaymentsPreProcessingType::get_headers(
+                    self, req, connectors,
+                )?)
+                .set_body(types::PaymentsPreProcessingType::get_request_body(
+                    self, req, connectors,
+                )?)
+                .build(),
+        ))
+    }
+
+    fn handle_response(
+        &self,
+        data: &PaymentsPreProcessingRouterData,
+        event_builder: Option<&mut ConnectorEvent>,
+        res: Response,
+    ) -> CustomResult<PaymentsPreProcessingRouterData, errors::ConnectorError> {
+        let response: NordeaPaymentsResponse = res
+            .response
+            .parse_struct("NordeaPaymentsResponse")
+            .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
+
+        event_builder.map(|i| i.set_response_body(&response));
+        router_env::logger::info!(connector_response=?response);
+
+        RouterData::try_from(ResponseRouterData {
+            response,
+            data: data.clone(),
+            http_code: res.status_code,
+        })
+    }
+
+    fn get_error_response(
+        &self,
+        res: Response,
+        event_builder: Option<&mut ConnectorEvent>,
+    ) -> CustomResult<ErrorResponse, errors::ConnectorError> {
+        self.build_error_response(res, event_builder)
+    }
+}
+
 impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData> for Nordea {
     fn get_headers(
         &self,
         req: &PaymentsAuthorizeRouterData,
         connectors: &Connectors,
     ) -> CustomResult<Vec<(String, masking::Maskable<String>)>, errors::ConnectorError> {
-        self.build_headers(req, connectors)
+        let mut headers = self.build_headers(req, connectors)?;
+
+        // Add the X-Nordea-Originating-User-Ip header for authorize (connector confirm) calls
+        let user_ip = req.request.get_ip_address()?;
+
+        headers.push((
+            "X-Nordea-Originating-User-Ip".to_string(),
+            user_ip.peek().clone().into_masked(),
+        ));
+
+        Ok(headers)
     }
 
     fn get_content_type(&self) -> &'static str {
@@ -391,7 +512,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
         Ok(format!(
             "{}{}",
             self.base_url(_connectors),
-            "/personal/v5/payments/sepa-credit-transfer"
+            "/personal/v5/payments"
         ))
     }
 
@@ -407,7 +528,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
         )?;
 
         let connector_router_data = NordeaRouterData::from((amount, req));
-        let connector_req = NordeaPaymentsRequest::try_from(&connector_router_data)?;
+        let connector_req = NordeaPaymentsConfirmRequest::try_from(&connector_router_data)?;
         Ok(RequestContent::Json(Box::new(connector_req)))
     }
 

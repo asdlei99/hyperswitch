@@ -85,10 +85,42 @@ pub struct CreditorAccountReference {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct NordeaAddress {
+    /// First line of the address. e.g. Street address
+    pub line1: Option<Secret<String>>,
+    /// Second line of the address (optional). e.g. Postal address
+    pub line2: Option<Secret<String>>,
+    /// Third line of the address (optional). e.g. Country
+    pub line3: Option<Secret<String>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct CreditorBank {
+    /// Address
+    pub address: Option<NordeaAddress>,
+    /// Bank code
+    pub bank_code: Option<String>,
+    /// Business identifier code (BIC) of the creditor bank.
+    /// This information is required, if the creditor account number is not in IBAN format.
+    #[serde(rename = "bic")]
+    pub business_identifier_code: Option<Secret<String>>,
+    /// Country of the creditor bank. Only ISO 3166 alpha-2 codes are used.
+    pub country: api_models::enums::CountryAlpha2,
+    /// Name of the creditor bank.
+    #[serde(rename = "name")]
+    pub bank_name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct CreditorAccount {
     /// Account number
     pub account: AccountNumber,
+    /// Creditor bank information.
+    pub bank: CreditorBank,
+    /// Country of the creditor
     pub country: Option<api_models::enums::CountryAlpha2>,
+    /// Address
+    pub creditor_address: Option<NordeaAddress>,
     /// Message for the creditor to appear on their transaction.
     /// Max length: FI SEPA:140; SE:12; PGNR:25; BGNR:150; DK: 40 (Instant/Express: 140); NO: 140
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,7 +144,7 @@ pub struct DebitorAccount {
     pub message: Option<String>,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct InstructedAmount {
     /// Monetary amount of the payment. Max (digits+decimals): FI SEPA: (9+2); SE:(11+2); DK:(7+2); NO:(7+2)
     pub amount: StringMajorUnit,
@@ -150,12 +182,10 @@ pub enum FundsAvailabilityRequest {
     False,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Serialize, PartialEq, Clone)]
 pub enum PaymentsUrgency {
     Standard,
     Express,
-    #[serde(rename = "sameday (Deprecated)")]
     Sameday,
 }
 
@@ -285,6 +315,49 @@ pub struct NordeaPaymentsRequest {
     /// For further details on urgencies and cut-offs, refer to the Nordea website. Value 'sameday' is marked as deprecated and will be removed in the future.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub urgency: Option<PaymentsUrgency>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum NordeaAuthenticationMethod {
+    Mta,
+    #[serde(rename = "CCALC (Deprecated)")]
+    Ccalc,
+    Qrt,
+    CardRdr,
+    BankidSe,
+    QrtSe,
+    BankidNo,
+    BankidmNo,
+    MtaNo,
+    #[serde(rename = "NEMID_2F")]
+    Nemid2f,
+    Mitid,
+    MtaDk,
+    QrtDk,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum NordeaConfirmLanguage {
+    Fi,
+    Da,
+    Sv,
+    En,
+    No,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+pub struct NordeaPaymentsConfirmRequest {
+    /// Authentication method to use for the signing of payment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication_method: Option<NordeaAuthenticationMethod>,
+    /// Language of the signing page that will be displayed to client, ISO639-1 and 639-2, default=en
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<NordeaConfirmLanguage>,
+    pub payments_ids: Vec<String>,
+    pub redirect_url: Option<String>,
+    pub state: Option<String>,
 }
 
 //TODO: Fill the struct with respective fields

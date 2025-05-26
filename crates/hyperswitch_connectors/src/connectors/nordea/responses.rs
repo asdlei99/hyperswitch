@@ -4,7 +4,8 @@ use masking::Secret;
 use serde::{Deserialize, Serialize};
 
 use super::requests::{
-    CreditorAccount, DebitorAccount, PaymentsUrgency, RecurringInformation, ThirdPartyMessages,
+    CreditorAccount, DebitorAccount, InstructedAmount, PaymentsUrgency, RecurringInformation,
+    ThirdPartyMessages,
 };
 
 // OAuth token response structure
@@ -56,6 +57,24 @@ pub struct NordeaResponseLinks {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum FeesType {
+    Additional,
+    Standard,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct TransactionFee {
+    /// Monetary amount
+    pub amount: InstructedAmount,
+    pub description: Option<String>,
+    pub excluded_from_total_fee: Option<bool>,
+    pub percentage: Option<bool>,
+    #[serde(rename = "type")]
+    pub fees_type: Option<FeesType>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct BankFee {
     /// Example 'domestic_transaction' only for DK domestic payments
     #[serde(rename = "_type")]
@@ -66,6 +85,9 @@ pub struct BankFee {
     pub currency_code: Option<api_models::enums::Currency>,
     /// Value of the fee.
     pub value: Option<StringMajorUnit>,
+    pub fees: Option<Vec<TransactionFee>>,
+    /// Monetary amount
+    pub total_fee_amount: InstructedAmount,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -73,6 +95,12 @@ pub struct BankFee {
 pub enum ChargeBearer {
     Shar,
     Debt,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct ExchangeRate {
+    pub base_currency: Option<api_models::enums::Currency>,
+    pub exchange_currency: Option<api_models::enums::Currency>,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -87,11 +115,11 @@ pub struct NordeaResponseBody {
     /// The indicator shows whether the funds are available to process the current payment - at this moment.
     pub availability_of_funds: Option<bool>,
     /// BankIdSe authentication session id. Needed when you call /v4/payments/domestic/confirm/bankidse/{bankIdSeAuthenticationId}
-    pub bank_id_se_authentication_id: Option<String>,
+    pub bank_id_se_authentication_id: Option<Secret<String>>,
     /// Purpose code of money transfer as defined by Swedish Tax Authority/Skattewerket
     /// Purpose code of money transfer, mandatory for transfers above 100.000 NOK or the
     /// equivalent in other currencies, have to be reported to the Norwegian Customs and Excise (Tollvesenet)
-    pub central_bank_reporting_code: Option<String>,
+    pub central_bank_reporting_code: Option<Secret<String>>,
     /// Supplementary information about the transfer purpose. Mandatory when central_bank_reporting_code is informed
     pub central_bank_reporting_supplementary_text: Option<String>,
     /// Bearer of charges. shar = The Debtor (sender of the payment) will pay all fees charged by the sending bank.
@@ -113,6 +141,13 @@ pub struct NordeaResponseBody {
     pub external_id: Option<String>,
     /// An amount the bank will charge for executing the payment
     pub fee: Option<BankFee>,
+    pub indicative_exchange_rate: Option<ExchangeRate>,
+    /// It is mentioned as `number`. It can be an integer or a decimal number.
+    pub rate: Option<f32>,
+    /// Monetary amount
+    pub instructed_amount: Option<InstructedAmount>,
+    /// Indication of cross border payment to own account
+    pub is_own_account_transfer: Option<bool>,
     /// OTP Challenge
     pub otp_challenge: Option<String>,
     /// Status of the payment
@@ -131,6 +166,11 @@ pub struct NordeaResponseBody {
     pub timestamp: Option<String>,
     /// Additional messages for third parties
     pub tpp_messages: Option<Vec<ThirdPartyMessages>>,
+    pub transaction_fee: Option<Vec<BankFee>>,
+    /// Currency that the cross border payment will be transferred in.
+    /// This field is only supported for cross border payments for DK.
+    /// If this field is not supplied then the payment will use the currency specified for the currency field of instructed_amount.
+    pub transfer_currency: Option<api_models::enums::Currency>,
     /// Urgency of the payment. NB: This field is supported for DK Domestic ('standard' and 'express') and NO Domestic bank transfer payments ('standard' and 'express').
     /// Use 'express' for Straksbetaling (Instant payment).
     /// All other payment types ignore this input.
@@ -146,6 +186,32 @@ pub struct NordeaPaymentsResponse {
     pub payments_response: Option<NordeaResponseBody>,
     /// External response header
     pub group_header: Option<NordeaGroupHeader>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct NordeaPaymentsConfirmErrorObject {
+    /// Error message
+    pub error: Option<String>,
+    /// Description of the error
+    pub error_descriptino: Option<String>,
+    /// Payment id of the payment, the error is associated with
+    pub payment_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub struct NordeaPaymentsConfirmResponse {
+    /// HATEOAS inspired links: 'rel' and 'href'
+    #[serde(rename = "_links")]
+    pub links: Option<Vec<NordeaResponseLinks>>,
+    /// BankIdSe authentication session id. Needed when you call /v5/payments/confirm/bankidse/{bankIdSeAuthenticationId}
+    pub bank_id_se_authentication_id: Option<String>,
+    /// Error description
+    pub errors: Option<Vec<NordeaPaymentsConfirmErrorObject>>,
+    /// External response header
+    pub group_header: Option<NordeaGroupHeader>,
+    /// OTP Challenge
+    pub otp_challenge: Option<String>,
+    pub response: Option<NordeaResponseBody>,
 }
 
 #[allow(dead_code)]
