@@ -1,13 +1,6 @@
 pub mod transformers;
 
-// Constants
-pub const BASE_URL: &str = "https://api.monexgroup.com/v1";
-pub const SANDBOX_URL: &str = "https://sandbox.api.monexgroup.com/v1";
-pub const PAYMENTS_URL: &str = "/payments/authorize";
-pub const CAPTURES_URL: &str = "/payments/capture";
-pub const PAYMENTS_SYNC_URL: &str = "/payments";
-pub const REFUNDS_URL: &str = "/payments/refund";
-
+use common_enums::enums;
 use common_utils::{
     errors::CustomResult,
     ext_traits::BytesExt,
@@ -45,16 +38,22 @@ use hyperswitch_interfaces::{
     webhooks,
 };
 use masking::{ExposeInterface, Mask};
-use transformers as monex;
+use transformers as monei;
 
-use crate::{constants::headers, types::ResponseRouterData, utils};
+use crate::{constants::headers, types::ResponseRouterData, utils, utils::RefundsRequestData};
+
+// MONEI Base URLs and endpoints
+pub const BASE_URL: &str = "https://api.monei.com/v1";
+pub const PAYMENTS_URL: &str = "/payments";
+pub const CAPTURES_URL: &str = "/captures";
+pub const REFUNDS_URL: &str = "/refunds";
 
 #[derive(Clone)]
-pub struct Monex {
+pub struct Monei {
     amount_converter: &'static (dyn AmountConvertor<Output = StringMinorUnit> + Sync),
 }
 
-impl Monex {
+impl Monei {
     pub fn new() -> &'static Self {
         &Self {
             amount_converter: &StringMinorUnitForConnector,
@@ -62,26 +61,26 @@ impl Monex {
     }
 }
 
-impl api::Payment for Monex {}
-impl api::PaymentSession for Monex {}
-impl api::ConnectorAccessToken for Monex {}
-impl api::MandateSetup for Monex {}
-impl api::PaymentAuthorize for Monex {}
-impl api::PaymentSync for Monex {}
-impl api::PaymentCapture for Monex {}
-impl api::PaymentVoid for Monex {}
-impl api::Refund for Monex {}
-impl api::RefundExecute for Monex {}
-impl api::RefundSync for Monex {}
-impl api::PaymentToken for Monex {}
+impl api::Payment for Monei {}
+impl api::PaymentSession for Monei {}
+impl api::ConnectorAccessToken for Monei {}
+impl api::MandateSetup for Monei {}
+impl api::PaymentAuthorize for Monei {}
+impl api::PaymentSync for Monei {}
+impl api::PaymentCapture for Monei {}
+impl api::PaymentVoid for Monei {}
+impl api::Refund for Monei {}
+impl api::RefundExecute for Monei {}
+impl api::RefundSync for Monei {}
+impl api::PaymentToken for Monei {}
 
 impl ConnectorIntegration<PaymentMethodToken, PaymentMethodTokenizationData, PaymentsResponseData>
-    for Monex
+    for Monei
 {
     // Not Implemented (R)
 }
 
-impl<Flow, Request, Response> ConnectorCommonExt<Flow, Request, Response> for Monex
+impl<Flow, Request, Response> ConnectorCommonExt<Flow, Request, Response> for Monei
 where
     Self: ConnectorIntegration<Flow, Request, Response>,
 {
@@ -100,13 +99,13 @@ where
     }
 }
 
-impl ConnectorCommon for Monex {
+impl ConnectorCommon for Monei {
     fn id(&self) -> &'static str {
-        "monex"
+        "monei"
     }
 
     fn get_currency_unit(&self) -> api::CurrencyUnit {
-        // Based on Monex documentation, it processes amount in minor units (cents for USD)
+        // MONEI processes amounts in minor units (cents for USD/EUR)
         api::CurrencyUnit::Minor
     }
 
@@ -115,27 +114,22 @@ impl ConnectorCommon for Monex {
     }
 
     fn base_url<'a>(&self, connectors: &'a Connectors) -> &'a str {
-        connectors.monex.base_url.as_ref()
+        connectors.monei.base_url.as_ref()
     }
 
     fn get_auth_header(
         &self,
         auth_type: &ConnectorAuthType,
     ) -> CustomResult<Vec<(String, masking::Maskable<String>)>, errors::ConnectorError> {
-        // First check if we have a stored access token
-        if let ConnectorAuthType::BodyKey { api_key, .. } = auth_type {
-            return Ok(vec![(
-                headers::AUTHORIZATION.to_string(),
-                format!("Bearer {}", api_key.clone().expose()).into_masked(),
-            )]);
-        }
-
-        // Fall back to API key if access token not available
-        let auth = monex::MonexAuthType::try_from(auth_type)
+        let auth = monei::MoneiAuthType::try_from(auth_type)
             .change_context(errors::ConnectorError::FailedToObtainAuthType)?;
+        
+        // Format the API key as a Bearer token for MONEI authentication
+        let auth_value = format!("Bearer {}", auth.api_key.expose());
+        
         Ok(vec![(
             headers::AUTHORIZATION.to_string(),
-            format!("Bearer {}", auth.api_key.clone().expose()).into_masked(),
+            auth_value.into_masked(),
         )])
     }
 
@@ -144,176 +138,90 @@ impl ConnectorCommon for Monex {
         res: Response,
         event_builder: Option<&mut ConnectorEvent>,
     ) -> CustomResult<ErrorResponse, errors::ConnectorError> {
-        // Try to parse as detailed error response first
-        let detailed_response = res
-            .response
-            .parse_struct::<monex::MonexDetailedErrorResponse>("MonexDetailedErrorResponse");
-
-        let response = match detailed_response {
-            Ok(detailed) if !detailed.errors.is_empty() => {
-                // Use the first error from the detailed error response
-                event_builder.map(|i| i.set_response_body(&detailed));
-                router_env::logger::info!(connector_response=?detailed);
-
-                let first_error = &detailed.errors[0];
-                ErrorResponse {
-                    status_code: res.status_code,
-                    code: first_error.code.clone(),
-                    message: first_error.message.clone(),
-                    reason: first_error.reason.clone(),
-                    attempt_status: None,
-                    connector_transaction_id: None,
-                    network_decline_code: None,
-                    network_advice_code: None,
-                    network_error_message: None,
-                }
-            }
-            _ => {
-                // Try to parse as standard error response
-                let standard_response = res
-                    .response
-                    .parse_struct::<monex::MonexErrorResponse>("MonexErrorResponse")
-                    .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
-
-                event_builder.map(|i| i.set_response_body(&standard_response));
-                router_env::logger::info!(connector_response=?standard_response);
-
-                // Map status code to appropriate attempt status
-                let attempt_status = match res.status_code {
-                    400..=499 => match standard_response.code.as_str() {
-                        "card_declined" => Some(common_enums::AttemptStatus::Failure),
-                        "insufficient_funds" => Some(common_enums::AttemptStatus::Failure),
-                        "invalid_card" => Some(common_enums::AttemptStatus::Failure),
-                        _ => None,
-                    },
-                    500..=599 => Some(common_enums::AttemptStatus::Pending),
-                    _ => None,
-                };
-
-                ErrorResponse {
-                    status_code: res.status_code,
-                    code: standard_response.code,
-                    message: standard_response.message,
-                    reason: standard_response.reason,
-                    attempt_status,
-                    connector_transaction_id: None,
-                    network_decline_code: None,
-                    network_advice_code: None,
-                    network_error_message: None,
-                }
-            }
-        };
-
-        Ok(response)
-    }
-}
-
-impl ConnectorValidation for Monex {
-    //TODO: implement functions when support enabled
-}
-
-impl ConnectorIntegration<Session, PaymentsSessionData, PaymentsResponseData> for Monex {
-    //TODO: implement sessions flow
-}
-
-impl ConnectorIntegration<AccessTokenAuth, AccessTokenRequestData, AccessToken> for Monex {
-    fn get_headers(
-        &self,
-        _req: &RouterData<AccessTokenAuth, AccessTokenRequestData, AccessToken>,
-        _connectors: &Connectors,
-    ) -> CustomResult<Vec<(String, masking::Maskable<String>)>, errors::ConnectorError> {
-        Ok(vec![(
-            headers::CONTENT_TYPE.to_string(),
-            "application/x-www-form-urlencoded".to_string().into(),
-        )])
-    }
-
-    fn get_content_type(&self) -> &'static str {
-        "application/x-www-form-urlencoded"
-    }
-
-    fn get_url(
-        &self,
-        _req: &RouterData<AccessTokenAuth, AccessTokenRequestData, AccessToken>,
-        connectors: &Connectors,
-    ) -> CustomResult<String, errors::ConnectorError> {
-        Ok(format!("{}/oauth/token", self.base_url(connectors)))
-    }
-
-    fn get_request_body(
-        &self,
-        req: &RouterData<AccessTokenAuth, AccessTokenRequestData, AccessToken>,
-        _connectors: &Connectors,
-    ) -> CustomResult<RequestContent, errors::ConnectorError> {
-        router_env::logger::debug!("Creating OAuth token request for Monex");
-        let auth = monex::MonexAuthType::try_from(&req.connector_auth_type)?;
-        let connector_req = monex::MonexOAuthRequest {
-            grant_type: "client_credentials".to_string(),
-            client_id: auth.client_id,
-            client_secret: auth.client_secret,
-        };
-        Ok(RequestContent::FormUrlEncoded(Box::new(connector_req)))
-    }
-
-    fn build_request(
-        &self,
-        req: &RouterData<AccessTokenAuth, AccessTokenRequestData, AccessToken>,
-        connectors: &Connectors,
-    ) -> CustomResult<Option<Request>, errors::ConnectorError> {
-        let request = RequestBuilder::new()
-            .method(Method::Post)
-            .url(&types::RefreshTokenType::get_url(self, req, connectors)?)
-            .attach_default_headers()
-            .headers(types::RefreshTokenType::get_headers(self, req, connectors)?)
-            .set_body(types::RefreshTokenType::get_request_body(
-                self, req, connectors,
-            )?)
-            .build();
-        Ok(Some(request))
-    }
-
-    fn handle_response(
-        &self,
-        data: &RouterData<AccessTokenAuth, AccessTokenRequestData, AccessToken>,
-        event_builder: Option<&mut ConnectorEvent>,
-        res: Response,
-    ) -> CustomResult<
-        RouterData<AccessTokenAuth, AccessTokenRequestData, AccessToken>,
-        errors::ConnectorError,
-    > {
-        let response: monex::MonexOAuthResponse =
+        let response: monei::MoneiErrorResponse =
             res.response
-                .parse_struct("MonexOAuthResponse")
+                .parse_struct("MoneiErrorResponse")
                 .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
 
         event_builder.map(|i| i.set_response_body(&response));
         router_env::logger::info!(connector_response=?response);
 
-        // Calculate expiry time
-        let expires_in = response.expires_in;
-        let expiry_time = time::OffsetDateTime::now_utc().unix_timestamp() + expires_in;
+        // Determine appropriate attempt status based on error code
+        let attempt_status = match response.code.as_str() {
+            "payment_method_declined" | "card_declined" => Some(enums::AttemptStatus::Failure),
+            "payment_intent_authentication_failure" => Some(enums::AttemptStatus::AuthenticationFailed),
+            "payment_expired" => Some(enums::AttemptStatus::AuthorizationFailed), // Using AuthorizationFailed for expired payments
+            "payment_captured" | "payment_refunded" => Some(enums::AttemptStatus::Charged),
+            "payment_authorization_expired" => Some(enums::AttemptStatus::AuthorizationFailed),
+            "resource_missing" | "idempotency_key_reused" => Some(enums::AttemptStatus::Pending),
+            _ => None,
+        };
 
-        Ok(RouterData {
-            response: Ok(AccessToken {
-                token: response.access_token,
-                expires: expiry_time,
-            }),
-            ..data.clone()
+        // Extract network decline code if available in error details
+        let mut network_decline_code = None;
+        let mut network_error_message = None;
+        
+        if let Some(details) = &response.error_details {
+            if !details.is_empty() {
+                // Use the first error detail message as the network error message
+                network_error_message = Some(details[0].message.clone());
+                
+                // Check if any error detail has parameter 'decline_code'
+                for detail in details {
+                    if let Some(param) = &detail.param {
+                        if param == "decline_code" || param.contains("code") {
+                            network_decline_code = Some(detail.message.clone());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Construct a comprehensive error message if available from details
+        let error_message = if let Some(details) = &response.error_details {
+            if !details.is_empty() {
+                // Combine the main message with detailed messages
+                let detailed_messages: Vec<String> = details
+                    .iter()
+                    .map(|detail| detail.message.clone())
+                    .collect();
+                
+                format!("{}: {}", response.message, detailed_messages.join(", "))
+            } else {
+                response.message.clone()
+            }
+        } else {
+            response.message.clone()
+        };
+
+        Ok(ErrorResponse {
+            status_code: res.status_code,
+            code: response.code,
+            message: error_message,
+            reason: response.reason,
+            attempt_status,
+            connector_transaction_id: None, // MONEI doesn't provide transaction ID in error responses
+            network_decline_code,
+            network_advice_code: None, // MONEI doesn't provide advice codes
+            network_error_message,
         })
-    }
-
-    fn get_error_response(
-        &self,
-        res: Response,
-        event_builder: Option<&mut ConnectorEvent>,
-    ) -> CustomResult<ErrorResponse, errors::ConnectorError> {
-        self.build_error_response(res, event_builder)
     }
 }
 
-impl ConnectorIntegration<SetupMandate, SetupMandateRequestData, PaymentsResponseData> for Monex {}
+impl ConnectorValidation for Monei {
+    //TODO: implement functions when support enabled
+}
 
-impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData> for Monex {
+impl ConnectorIntegration<Session, PaymentsSessionData, PaymentsResponseData> for Monei {
+    //TODO: implement sessions flow
+}
+
+impl ConnectorIntegration<AccessTokenAuth, AccessTokenRequestData, AccessToken> for Monei {}
+
+impl ConnectorIntegration<SetupMandate, SetupMandateRequestData, PaymentsResponseData> for Monei {}
+
+impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData> for Monei {
     fn get_headers(
         &self,
         req: &PaymentsAuthorizeRouterData,
@@ -339,26 +247,14 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
         req: &PaymentsAuthorizeRouterData,
         _connectors: &Connectors,
     ) -> CustomResult<RequestContent, errors::ConnectorError> {
-        router_env::logger::debug!(
-            payment_id=?req.payment_id,
-            "Creating payment authorization request for Monex"
-        );
-
         let amount = utils::convert_amount(
             self.amount_converter,
             req.request.minor_amount,
             req.request.currency,
         )?;
 
-        router_env::logger::debug!(
-            payment_id=?req.payment_id,
-            amount=?amount,
-            currency=?req.request.currency,
-            "Payment amount converted for Monex"
-        );
-
-        let connector_router_data = monex::MonexRouterData::from((amount, req));
-        let connector_req = monex::MonexPaymentsRequest::try_from(&connector_router_data)?;
+        let connector_router_data = monei::MoneiRouterData::from((amount, req));
+        let connector_req = monei::MoneiPaymentsRequest::try_from(&connector_router_data)?;
         Ok(RequestContent::Json(Box::new(connector_req)))
     }
 
@@ -390,27 +286,12 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
         event_builder: Option<&mut ConnectorEvent>,
         res: Response,
     ) -> CustomResult<PaymentsAuthorizeRouterData, errors::ConnectorError> {
-        router_env::logger::debug!(
-            payment_id=?data.payment_id,
-            status_code=?res.status_code,
-            "Received payment authorization response from Monex"
-        );
-
-        let response: monex::MonexPaymentsResponse = res
+        let response: monei::MoneiPaymentsResponse = res
             .response
-            .parse_struct("Monex PaymentsAuthorizeResponse")
+            .parse_struct("Monei PaymentsAuthorizeResponse")
             .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
-
         event_builder.map(|i| i.set_response_body(&response));
-
-        router_env::logger::info!(
-            payment_id=?data.payment_id,
-            connector_response=?response,
-            connector_payment_id=?response.id,
-            status=?response.status,
-            "Payment authorization processed"
-        );
-
+        router_env::logger::info!(connector_response=?response);
         RouterData::try_from(ResponseRouterData {
             response,
             data: data.clone(),
@@ -427,7 +308,7 @@ impl ConnectorIntegration<Authorize, PaymentsAuthorizeData, PaymentsResponseData
     }
 }
 
-impl ConnectorIntegration<PSync, PaymentsSyncData, PaymentsResponseData> for Monex {
+impl ConnectorIntegration<PSync, PaymentsSyncData, PaymentsResponseData> for Monei {
     fn get_headers(
         &self,
         req: &PaymentsSyncRouterData,
@@ -445,18 +326,12 @@ impl ConnectorIntegration<PSync, PaymentsSyncData, PaymentsResponseData> for Mon
         req: &PaymentsSyncRouterData,
         connectors: &Connectors,
     ) -> CustomResult<String, errors::ConnectorError> {
-        let payment_id = req.request.connector_transaction_id.clone();
-        let payment_id_str = match payment_id {
-            hyperswitch_domain_models::router_request_types::ResponseId::ConnectorTransactionId(
-                id,
-            ) => id,
-            _ => Err(errors::ConnectorError::RequestEncodingFailed)?,
-        };
+        let connector_payment_id = req.request.connector_transaction_id.clone();
         Ok(format!(
             "{}{}/{}",
             self.base_url(connectors),
-            PAYMENTS_SYNC_URL,
-            payment_id_str
+            PAYMENTS_URL,
+            connector_payment_id.get_connector_transaction_id().change_context(errors::ConnectorError::MissingConnectorTransactionID)?
         ))
     }
 
@@ -481,9 +356,9 @@ impl ConnectorIntegration<PSync, PaymentsSyncData, PaymentsResponseData> for Mon
         event_builder: Option<&mut ConnectorEvent>,
         res: Response,
     ) -> CustomResult<PaymentsSyncRouterData, errors::ConnectorError> {
-        let response: monex::MonexPaymentsResponse = res
+        let response: monei::MoneiPaymentsResponse = res
             .response
-            .parse_struct("monex PaymentsSyncResponse")
+            .parse_struct("monei PaymentsSyncResponse")
             .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
         event_builder.map(|i| i.set_response_body(&response));
         router_env::logger::info!(connector_response=?response);
@@ -503,7 +378,7 @@ impl ConnectorIntegration<PSync, PaymentsSyncData, PaymentsResponseData> for Mon
     }
 }
 
-impl ConnectorIntegration<Capture, PaymentsCaptureData, PaymentsResponseData> for Monex {
+impl ConnectorIntegration<Capture, PaymentsCaptureData, PaymentsResponseData> for Monei {
     fn get_headers(
         &self,
         req: &PaymentsCaptureRouterData,
@@ -518,16 +393,14 @@ impl ConnectorIntegration<Capture, PaymentsCaptureData, PaymentsResponseData> fo
 
     fn get_url(
         &self,
-        req: &PaymentsCaptureRouterData,
+        _req: &PaymentsCaptureRouterData,
         connectors: &Connectors,
     ) -> CustomResult<String, errors::ConnectorError> {
-        // Format the URL with the payment ID from the connector transaction ID
-        let payment_id = &req.request.connector_transaction_id;
+        // For MONEI, captures are created by posting to the /captures endpoint
         Ok(format!(
-            "{}{}/{}",
+            "{}{}",
             self.base_url(connectors),
-            CAPTURES_URL,
-            payment_id
+            CAPTURES_URL
         ))
     }
 
@@ -536,15 +409,18 @@ impl ConnectorIntegration<Capture, PaymentsCaptureData, PaymentsResponseData> fo
         req: &PaymentsCaptureRouterData,
         _connectors: &Connectors,
     ) -> CustomResult<RequestContent, errors::ConnectorError> {
-        // Convert amount_to_capture to MinorUnit
-        let minor_amount = common_utils::types::MinorUnit::new(req.request.amount_to_capture);
-
-        let amount =
-            utils::convert_amount(self.amount_converter, minor_amount, req.request.currency)?;
-
-        let connector_router_data = monex::MonexRouterData::from((amount, req));
-        let connector_req = monex::MonexPaymentsCaptureRequest::try_from(&connector_router_data)?;
-        Ok(RequestContent::Json(Box::new(connector_req)))
+        let payment_id = req.request.connector_transaction_id.clone();
+        
+        // Convert the amount_to_capture (i64) to a string for the request
+        let amount = req.request.amount_to_capture.to_string();
+        
+        // Create a simple JSON object with payment ID and amount
+        let capture_request = serde_json::json!({
+            "payment": payment_id,
+            "amount": amount
+        });
+        
+        Ok(RequestContent::Json(Box::new(capture_request)))
     }
 
     fn build_request(
@@ -573,9 +449,9 @@ impl ConnectorIntegration<Capture, PaymentsCaptureData, PaymentsResponseData> fo
         event_builder: Option<&mut ConnectorEvent>,
         res: Response,
     ) -> CustomResult<PaymentsCaptureRouterData, errors::ConnectorError> {
-        let response: monex::MonexPaymentsResponse = res
+        let response: monei::MoneiPaymentsResponse = res
             .response
-            .parse_struct("Monex PaymentsCaptureResponse")
+            .parse_struct("Monei PaymentsCaptureResponse")
             .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
         event_builder.map(|i| i.set_response_body(&response));
         router_env::logger::info!(connector_response=?response);
@@ -595,9 +471,9 @@ impl ConnectorIntegration<Capture, PaymentsCaptureData, PaymentsResponseData> fo
     }
 }
 
-impl ConnectorIntegration<Void, PaymentsCancelData, PaymentsResponseData> for Monex {}
+impl ConnectorIntegration<Void, PaymentsCancelData, PaymentsResponseData> for Monei {}
 
-impl ConnectorIntegration<Execute, RefundsData, RefundsResponseData> for Monex {
+impl ConnectorIntegration<Execute, RefundsData, RefundsResponseData> for Monei {
     fn get_headers(
         &self,
         req: &RefundsRouterData<Execute>,
@@ -612,16 +488,14 @@ impl ConnectorIntegration<Execute, RefundsData, RefundsResponseData> for Monex {
 
     fn get_url(
         &self,
-        req: &RefundsRouterData<Execute>,
+        _req: &RefundsRouterData<Execute>,
         connectors: &Connectors,
     ) -> CustomResult<String, errors::ConnectorError> {
-        // Format the URL with the payment ID
-        let payment_id = req.request.connector_transaction_id.clone();
+        // For MONEI, refunds are created by posting to the /refunds endpoint
         Ok(format!(
-            "{}{}/{}",
+            "{}{}",
             self.base_url(connectors),
-            REFUNDS_URL,
-            payment_id
+            REFUNDS_URL
         ))
     }
 
@@ -630,28 +504,14 @@ impl ConnectorIntegration<Execute, RefundsData, RefundsResponseData> for Monex {
         req: &RefundsRouterData<Execute>,
         _connectors: &Connectors,
     ) -> CustomResult<RequestContent, errors::ConnectorError> {
-        router_env::logger::debug!(
-            payment_id=?req.payment_id,
-            refund_id=?req.request.refund_id,
-            "Creating refund request for Monex"
-        );
-
         let refund_amount = utils::convert_amount(
             self.amount_converter,
             req.request.minor_refund_amount,
             req.request.currency,
         )?;
 
-        router_env::logger::debug!(
-            payment_id=?req.payment_id,
-            refund_id=?req.request.refund_id,
-            amount=?refund_amount,
-            currency=?req.request.currency,
-            "Refund amount converted for Monex"
-        );
-
-        let connector_router_data = monex::MonexRouterData::from((refund_amount, req));
-        let connector_req = monex::MonexRefundRequest::try_from(&connector_router_data)?;
+        let connector_router_data = monei::MoneiRouterData::from((refund_amount, req));
+        let connector_req = monei::MoneiRefundRequest::try_from(&connector_router_data)?;
         Ok(RequestContent::Json(Box::new(connector_req)))
     }
 
@@ -680,29 +540,12 @@ impl ConnectorIntegration<Execute, RefundsData, RefundsResponseData> for Monex {
         event_builder: Option<&mut ConnectorEvent>,
         res: Response,
     ) -> CustomResult<RefundsRouterData<Execute>, errors::ConnectorError> {
-        router_env::logger::debug!(
-            payment_id=?data.payment_id,
-            refund_id=?data.request.refund_id,
-            status_code=?res.status_code,
-            "Received refund response from Monex"
-        );
-
-        let response: monex::MonexRefundResponse = res
+        let response: monei::MoneiRefundResponse = res
             .response
-            .parse_struct("Monex RefundResponse")
+            .parse_struct("monei RefundResponse")
             .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
-
         event_builder.map(|i| i.set_response_body(&response));
-
-        router_env::logger::info!(
-            payment_id=?data.payment_id,
-            refund_id=?data.request.refund_id,
-            connector_response=?response,
-            connector_refund_id=?response.id,
-            status=?response.status,
-            "Refund processed"
-        );
-
+        router_env::logger::info!(connector_response=?response);
         RouterData::try_from(ResponseRouterData {
             response,
             data: data.clone(),
@@ -719,7 +562,7 @@ impl ConnectorIntegration<Execute, RefundsData, RefundsResponseData> for Monex {
     }
 }
 
-impl ConnectorIntegration<RSync, RefundsData, RefundsResponseData> for Monex {
+impl ConnectorIntegration<RSync, RefundsData, RefundsResponseData> for Monei {
     fn get_headers(
         &self,
         req: &RefundSyncRouterData,
@@ -737,17 +580,12 @@ impl ConnectorIntegration<RSync, RefundsData, RefundsResponseData> for Monex {
         req: &RefundSyncRouterData,
         connectors: &Connectors,
     ) -> CustomResult<String, errors::ConnectorError> {
-        // Extract the refund ID from the connector_refund_id
-        let refund_id = req
-            .request
-            .connector_refund_id
-            .clone()
-            .ok_or(errors::ConnectorError::MissingConnectorRefundID)?;
-
-        // Format the URL with the refund ID
+        // For MONEI, refund sync involves fetching a specific refund by its ID
+        let refund_id = req.request.get_connector_refund_id()?;
         Ok(format!(
-            "{}/refunds/{}",
+            "{}{}/{}",
             self.base_url(connectors),
+            REFUNDS_URL,
             refund_id
         ))
     }
@@ -763,6 +601,9 @@ impl ConnectorIntegration<RSync, RefundsData, RefundsResponseData> for Monex {
                 .url(&types::RefundSyncType::get_url(self, req, connectors)?)
                 .attach_default_headers()
                 .headers(types::RefundSyncType::get_headers(self, req, connectors)?)
+                .set_body(types::RefundSyncType::get_request_body(
+                    self, req, connectors,
+                )?)
                 .build(),
         ))
     }
@@ -773,9 +614,9 @@ impl ConnectorIntegration<RSync, RefundsData, RefundsResponseData> for Monex {
         event_builder: Option<&mut ConnectorEvent>,
         res: Response,
     ) -> CustomResult<RefundSyncRouterData, errors::ConnectorError> {
-        let response: monex::MonexRefundResponse = res
+        let response: monei::MoneiRefundResponse = res
             .response
-            .parse_struct("Monex RefundSyncResponse")
+            .parse_struct("monei RefundSyncResponse")
             .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
         event_builder.map(|i| i.set_response_body(&response));
         router_env::logger::info!(connector_response=?response);
@@ -796,7 +637,7 @@ impl ConnectorIntegration<RSync, RefundsData, RefundsResponseData> for Monex {
 }
 
 #[async_trait::async_trait]
-impl webhooks::IncomingWebhook for Monex {
+impl webhooks::IncomingWebhook for Monei {
     fn get_webhook_object_reference_id(
         &self,
         _request: &webhooks::IncomingWebhookRequestDetails<'_>,
@@ -819,4 +660,4 @@ impl webhooks::IncomingWebhook for Monex {
     }
 }
 
-impl ConnectorSpecifications for Monex {}
+impl ConnectorSpecifications for Monei {}

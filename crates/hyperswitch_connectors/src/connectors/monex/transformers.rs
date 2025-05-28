@@ -1,3 +1,4 @@
+use cards;
 use common_enums::enums;
 use common_utils::types::StringMinorUnit;
 use hyperswitch_domain_models::{
@@ -11,7 +12,6 @@ use hyperswitch_domain_models::{
 use hyperswitch_interfaces::errors;
 use masking::Secret;
 use serde::{Deserialize, Serialize};
-use cards;
 
 use crate::{
     types::{RefundsResponseRouterData, ResponseRouterData},
@@ -204,14 +204,18 @@ impl<F, T> TryFrom<ResponseRouterData<F, MonexPaymentsResponse, T, PaymentsRespo
             // Convert to appropriate connector error based on error code
             let error_response: MonexErrorResponse = error.into();
             let _error_message = format!("[{}] {}", error_response.code, error_response.message);
-            
+
             // Map specific error codes to generic error types
             return match error_response.code.as_str() {
                 "authentication_failed" | "invalid_api_key" => {
                     Err(errors::ConnectorError::FailedToObtainAuthType.into())
                 }
-                "insufficient_funds" | "card_declined" | "invalid_card" | 
-                "invalid_card_number" | "invalid_card_expiry" | "invalid_card_cvc" => {
+                "insufficient_funds"
+                | "card_declined"
+                | "invalid_card"
+                | "invalid_card_number"
+                | "invalid_card_expiry"
+                | "invalid_card_cvc" => {
                     // Handle all payment validation errors
                     Err(errors::ConnectorError::RequestEncodingFailed.into())
                 }
@@ -224,18 +228,14 @@ impl<F, T> TryFrom<ResponseRouterData<F, MonexPaymentsResponse, T, PaymentsRespo
                 "unauthorized_request" => {
                     Err(errors::ConnectorError::FailedToObtainAuthType.into())
                 }
-                "validation_error" => {
-                    Err(errors::ConnectorError::RequestEncodingFailed.into())
-                }
+                "validation_error" => Err(errors::ConnectorError::RequestEncodingFailed.into()),
                 "server_error" | "internal_server_error" => {
                     Err(errors::ConnectorError::ResponseDeserializationFailed.into())
                 }
-                _ => {
-                    Err(errors::ConnectorError::ResponseHandlingFailed.into())
-                }
+                _ => Err(errors::ConnectorError::ResponseHandlingFailed.into()),
             };
         }
-        
+
         Ok(Self {
             status: common_enums::AttemptStatus::from(item.response.status),
             response: Ok(PaymentsResponseData::TransactionResponse {
@@ -320,7 +320,9 @@ pub struct MonexRefundResponse {
     pub error: Option<MonexPaymentError>,
 }
 
-impl TryFrom<RefundsResponseRouterData<Execute, MonexRefundResponse>> for RefundsRouterData<Execute> {
+impl TryFrom<RefundsResponseRouterData<Execute, MonexRefundResponse>>
+    for RefundsRouterData<Execute>
+{
     type Error = error_stack::Report<errors::ConnectorError>;
     fn try_from(
         item: RefundsResponseRouterData<Execute, MonexRefundResponse>,
@@ -330,7 +332,7 @@ impl TryFrom<RefundsResponseRouterData<Execute, MonexRefundResponse>> for Refund
             // Convert to appropriate connector error based on error code
             let error_response: MonexErrorResponse = error.into();
             let _error_message = format!("[{}] {}", error_response.code, error_response.message);
-            
+
             return match error_response.code.as_str() {
                 "authentication_failed" | "invalid_api_key" => {
                     Err(errors::ConnectorError::FailedToObtainAuthType.into())
@@ -338,18 +340,14 @@ impl TryFrom<RefundsResponseRouterData<Execute, MonexRefundResponse>> for Refund
                 "payment_not_found" => {
                     Err(errors::ConnectorError::ResponseDeserializationFailed.into())
                 }
-                "refund_not_allowed" | "refund_amount_exceeds_payment_amount" | "duplicate_refund" => {
-                    Err(errors::ConnectorError::RequestEncodingFailed.into())
-                }
-                "validation_error" => {
-                    Err(errors::ConnectorError::RequestEncodingFailed.into())
-                }
+                "refund_not_allowed"
+                | "refund_amount_exceeds_payment_amount"
+                | "duplicate_refund" => Err(errors::ConnectorError::RequestEncodingFailed.into()),
+                "validation_error" => Err(errors::ConnectorError::RequestEncodingFailed.into()),
                 "server_error" | "internal_server_error" => {
                     Err(errors::ConnectorError::ResponseDeserializationFailed.into())
                 }
-                _ => {
-                    Err(errors::ConnectorError::ResponseHandlingFailed.into())
-                }
+                _ => Err(errors::ConnectorError::ResponseHandlingFailed.into()),
             };
         }
 
@@ -373,7 +371,7 @@ impl TryFrom<RefundsResponseRouterData<RSync, MonexRefundResponse>> for RefundsR
             // Convert to appropriate connector error based on error code
             let error_response: MonexErrorResponse = error.into();
             let _error_message = format!("[{}] {}", error_response.code, error_response.message);
-            
+
             return match error_response.code.as_str() {
                 "authentication_failed" | "invalid_api_key" => {
                     Err(errors::ConnectorError::FailedToObtainAuthType.into())
@@ -381,18 +379,14 @@ impl TryFrom<RefundsResponseRouterData<RSync, MonexRefundResponse>> for RefundsR
                 "refund_not_found" => {
                     Err(errors::ConnectorError::ResponseDeserializationFailed.into())
                 }
-                "validation_error" => {
-                    Err(errors::ConnectorError::RequestEncodingFailed.into())
-                }
+                "validation_error" => Err(errors::ConnectorError::RequestEncodingFailed.into()),
                 "server_error" | "internal_server_error" => {
                     Err(errors::ConnectorError::ResponseDeserializationFailed.into())
                 }
-                _ => {
-                    Err(errors::ConnectorError::ResponseHandlingFailed.into())
-                }
+                _ => Err(errors::ConnectorError::ResponseHandlingFailed.into()),
             };
         }
-        
+
         Ok(Self {
             response: Ok(RefundsResponseData {
                 connector_refund_id: item.response.id.to_string(),

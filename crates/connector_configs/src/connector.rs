@@ -162,6 +162,7 @@ pub struct ConnectorTomlConfig {
 #[serde_with::skip_serializing_none]
 #[derive(Debug, Deserialize, serde::Serialize, Clone)]
 pub struct ConnectorConfig {
+    pub monei: Option<ConnectorTomlConfig>,
     pub monex: Option<ConnectorTomlConfig>,
     pub spreedly: Option<ConnectorTomlConfig>,
     pub juspaythreedsserver: Option<ConnectorTomlConfig>,
@@ -353,6 +354,7 @@ impl ConnectorConfig {
         match connector {
             Connector::Aci => Ok(connector_data.aci),
             // PRAGMA: connector
+            Connector::Monei => Ok(connector_data.monei),
             Connector::Monex => Ok(connector_data.monex),
             Connector::Spreedly => Ok(connector_data.spreedly),
             Connector::Adyen => Ok(connector_data.adyen),
