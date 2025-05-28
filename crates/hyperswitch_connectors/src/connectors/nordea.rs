@@ -87,8 +87,29 @@ impl Nordea {
     }
 
     pub fn generate_digest(&self, payload: &[u8]) -> String {
-        let payload_digest = digest::digest(&digest::SHA256, payload);
+        let payload_digest = digest::digest(&digest::SHA256, &payload);
         consts::BASE64_ENGINE.encode(payload_digest)
+    }
+
+    pub fn generate_digest_from_request(&self, payload: &RequestContent) -> String {
+        let payload_bytes = match payload {
+            RequestContent::FormUrlEncoded(form_data) => {
+                // Get the JSON representation and convert to raw form string
+                let json_value = form_data.masked_serialize().unwrap_or_default();
+                if let serde_json::Value::Object(map) = json_value {
+                    map.iter()
+                        .map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or("")))
+                        .collect::<Vec<_>>()
+                        .join("&")
+                        .into_bytes()
+                } else {
+                    payload.get_inner_value().expose().as_bytes().to_vec()
+                }
+            }
+            _ => payload.get_inner_value().expose().as_bytes().to_vec(),
+        };
+
+        self.generate_digest(&payload_bytes)
     }
 
     // For non-production environments, signature generation can be skipped and instead `SKIP_SIGNATURE_VALIDATION_FOR_SANDBOX` can be passed.
@@ -243,8 +264,7 @@ where
         if matches!(http_method, Method::Post | Method::Put | Method::Patch) {
             let nordea_request = self.get_request_body(req, connectors)?;
 
-            let sha256_digest =
-                self.generate_digest(nordea_request.get_inner_value().expose().as_bytes());
+            let sha256_digest = self.generate_digest_from_request(&nordea_request)?;
 
             // Add Digest header
             required_headers.push((
