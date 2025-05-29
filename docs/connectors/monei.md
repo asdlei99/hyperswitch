@@ -7,6 +7,7 @@ MONEI is a payment gateway that enables businesses to accept card payments. The 
 - Payment Authorization (AUTH)
 - Payment Capture
 - Payment Synchronization
+- Payment Void/Cancel
 - Refund Processing
 - Refund Synchronization
 
@@ -32,9 +33,9 @@ MONEI supports standard currencies including USD, EUR, GBP, and others. Amounts 
 
 ### Authorization Flow
 
-The connector supports both authorization-only (AUTH) and direct capture (SALE) transactions:
-- When `capture_method` is set to `automatic`, the connector performs a direct SALE transaction
-- When `capture_method` is set to `manual`, the connector performs an AUTH transaction
+The connector supports both authorization-only and direct capture transactions:
+- When `capture_method` is set to `automatic`, the connector sets `transactionType` to "SALE"
+- When `capture_method` is set to `manual`, the connector sets `transactionType` to "AUTH"
 
 ### Capture Flow
 
@@ -42,11 +43,17 @@ For payments authorized with `manual` capture method, the connector supports:
 - Full capture
 - Partial capture
 
+### Void/Cancel Flow
+
+The connector supports cancellation of authorized payments before they are captured.
+- A cancellation reason can be provided which will be included in the request
+
 ### Refund Flow
 
 The connector supports:
 - Full refunds
 - Partial refunds
+- Refund reason can be included with the request
 
 ## Configuration Parameters
 

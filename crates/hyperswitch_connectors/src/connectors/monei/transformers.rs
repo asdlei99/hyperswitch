@@ -42,49 +42,90 @@ pub struct MoneiPaymentsRequest {
     /// Currency code in ISO 4217 format
     currency: String,
     /// A unique identifier for the payment
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reference: Option<String>,
+    #[serde(rename = "orderId", skip_serializing_if = "Option::is_none")]
+    order_id: Option<String>,
     /// Description of the payment shown to the customer
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
     /// Payment method details (card for card payments)
+    #[serde(rename = "paymentMethod")]
     payment_method: MoneiPaymentMethod,
     /// Customer information
     #[serde(skip_serializing_if = "Option::is_none")]
     customer: Option<MoneiCustomer>,
-    /// Whether to capture the payment immediately (true) or authorize only (false)
-    complete: bool,
+    /// Controls when funds will be captured (SALE or AUTH)
+    #[serde(rename = "transactionType")]
+    transaction_type: String,
     /// Return URL where the customer will be redirected after the payment
-    #[serde(skip_serializing_if = "Option::is_none")]
-    return_url: Option<String>,
+    #[serde(rename = "completeUrl", skip_serializing_if = "Option::is_none")]
+    complete_url: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MoneiPaymentMethod {
-    /// Type of payment method (card, paypal, etc.)
-    #[serde(rename = "type")]
-    payment_type: String,
+    /// The payment method type
+    #[serde(skip_serializing_if = "Option::is_none")]
+    method: Option<String>,
     /// Card details (required for card payments)
     #[serde(skip_serializing_if = "Option::is_none")]
     card: Option<MoneiCard>,
+    /// Bizum details (optional, for Bizum payments)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bizum: Option<MoneiBizum>,
+}
+
+#[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MoneiBizum {
+    /// Phone number for Bizum payments
+    #[serde(rename = "phoneNumber")]
+    phone_number: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct MoneiCard {
-    /// Card number
-    number: cards::CardNumber,
-    /// Expiry month (MM format)
-    expiry_month: Secret<String>,
-    /// Expiry year (YY format)
-    expiry_year: Secret<String>,
-    /// Card security code
-    cvc: Secret<String>,
+    /// Card number (only used in request, not present in response)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    number: Option<cards::CardNumber>,
+    /// Expiry month (MM format) (only used in request, not present in response)
+    #[serde(rename = "expMonth", skip_serializing_if = "Option::is_none")]
+    expiry_month: Option<Secret<String>>,
+    /// Expiry year (YY format) (only used in request, not present in response)
+    #[serde(rename = "expYear", skip_serializing_if = "Option::is_none")]
+    expiry_year: Option<Secret<String>>,
+    /// Card security code (only used in request, not present in response)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cvc: Option<Secret<String>>,
+    /// Cardholder name
+    #[serde(rename = "cardholderName", skip_serializing_if = "Option::is_none")]
+    cardholder_name: Option<String>,
+    /// Cardholder email
+    #[serde(rename = "cardholderEmail", skip_serializing_if = "Option::is_none")]
+    cardholder_email: Option<String>,
+    /// Card country (only in response)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    country: Option<String>,
+    /// Last 4 digits of the card (only in response)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last4: Option<String>,
+    /// Bank name (only in response)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bank: Option<String>,
+    /// Card expiration timestamp (only in response)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expiration: Option<i64>,
+    /// Card type (credit/debit) (only in response)
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    card_type: Option<String>,
+    /// Card brand (visa/mastercard) (only in response)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    brand: Option<String>,
 }
 
 #[derive(Default, Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MoneiCustomer {
     /// Customer's email address
     #[serde(skip_serializing_if = "Option::is_none")]
+    // <|>
     email: Option<String>,
     /// Customer's name
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -133,10 +174,11 @@ impl TryFrom<&MoneiRouterData<&PaymentsAuthorizeRouterData>> for MoneiPaymentsRe
         let is_auto_capture = request.is_auto_capture()?;
         
         // Extract email for customer details
+        
         let customer = request.email.as_ref().map(|_| {
             // Get the email address as a string, or use an empty string if not available
             let email_str = request.email.clone()
-                .map(|e| format!("{:?}", e).replace("\"", ""))
+                .map(|e| format!("{:?}", e.expose()).replace("\"", ""))
                 .unwrap_or_default();
             
             MoneiCustomer {
@@ -147,30 +189,40 @@ impl TryFrom<&MoneiRouterData<&PaymentsAuthorizeRouterData>> for MoneiPaymentsRe
             }
         });
         
+        
         // Set payment method details based on the payment method type
         match request.payment_method_data.clone() {
             PaymentMethodData::Card(req_card) => {
                 let card = MoneiCard {
-                    number: req_card.card_number,
-                    expiry_month: req_card.card_exp_month,
-                    expiry_year: req_card.card_exp_year,
-                    cvc: req_card.card_cvc,
+                    number: Some(req_card.card_number),
+                    expiry_month: Some(req_card.card_exp_month),
+                    expiry_year: Some(req_card.card_exp_year),
+                    cvc: Some(req_card.card_cvc),
+                    cardholder_name: request.customer_name.clone().map(|name| name.expose().to_string()),
+                    cardholder_email: request.email.clone().map(|email| format!("{:?}", email.expose()).replace("\"", "")),
+                    country: None,
+                    last4: None,
+                    bank: None,
+                    expiration: None,
+                    card_type: None,
+                    brand: None,
                 };
                 
                 let payment_method = MoneiPaymentMethod {
-                    payment_type: "card".to_string(),
+                    method: Some("card".to_string()),
                     card: Some(card),
+                    bizum: None,
                 };
                 
                 Ok(Self {
                     amount: item.amount.clone(),
                     currency: request.currency.to_string(),
-                    reference: Some(router_data.connector_request_reference_id.clone()),
+                    order_id: Some(router_data.connector_request_reference_id.clone()),
                     description: None, // Not available in the request
                     payment_method,
                     customer,
-                    complete: is_auto_capture,
-                    return_url: request.router_return_url.clone(),
+                    transaction_type: if is_auto_capture { "SALE" } else { "AUTH" }.to_string(),
+                    complete_url: request.router_return_url.clone(),
                 })
             }
             _ => Err(errors::ConnectorError::NotImplemented("Payment method".to_string()).into()),
@@ -208,6 +260,7 @@ pub enum MoneiPaymentStatus {
     REFUNDED,
     #[serde(rename = "PARTIALLY_REFUNDED")]
     PartiallyRefunded,
+    EXPIRED,
 }
 
 impl From<MoneiPaymentStatus> for common_enums::AttemptStatus {
@@ -220,6 +273,7 @@ impl From<MoneiPaymentStatus> for common_enums::AttemptStatus {
             MoneiPaymentStatus::CANCELED => Self::Voided,
             MoneiPaymentStatus::REFUNDED => Self::Charged,
             MoneiPaymentStatus::PartiallyRefunded => Self::Charged,
+            MoneiPaymentStatus::EXPIRED => Self::AuthorizationFailed,
         }
     }
 }
@@ -314,16 +368,11 @@ impl<F, T> TryFrom<ResponseRouterData<F, MoneiPaymentsResponse, T, PaymentsRespo
 // Type definition for RefundRequest
 #[derive(Default, Debug, Serialize)]
 pub struct MoneiRefundRequest {
-    /// Payment ID to be refunded
-    pub payment: String,
     /// Amount to refund in minor units (e.g., cents for USD/EUR)
     pub amount: StringMinorUnit,
     /// Reason for the refund (optional)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-    /// Reference for merchant's tracking (optional)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reference: Option<String>,
+    #[serde(rename = "refundReason", skip_serializing_if = "Option::is_none")]
+    pub refund_reason: Option<String>,
 }
 
 impl<F> TryFrom<&MoneiRouterData<&RefundsRouterData<F>>> for MoneiRefundRequest {
@@ -331,17 +380,9 @@ impl<F> TryFrom<&MoneiRouterData<&RefundsRouterData<F>>> for MoneiRefundRequest 
     fn try_from(item: &MoneiRouterData<&RefundsRouterData<F>>) -> Result<Self, Self::Error> {
         let router_data = item.router_data;
         
-        // Extract the payment ID from the connector_transaction_id field
-        let payment_id = router_data
-            .request
-            .connector_transaction_id
-            .clone();
-        
         Ok(Self {
-            payment: payment_id,
             amount: item.amount.to_owned(),
-            reason: router_data.request.reason.clone(),
-            reference: Some(router_data.connector_request_reference_id.clone()),
+            refund_reason: router_data.request.reason.clone(),
         })
     }
 }
@@ -446,8 +487,10 @@ pub struct MoneiErrorDetail {
 #[derive(Default, Debug, Serialize, Deserialize, PartialEq)]
 pub struct MoneiErrorResponse {
     /// HTTP status code
+    #[serde(default)]
     pub status_code: u16,
     /// Error type code
+    #[serde(default)]
     pub code: String,
     /// Human-readable error message
     pub message: String,

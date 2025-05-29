@@ -37,7 +37,7 @@ router/tests/connectors/
 - **Implementation Details**:
   - Authentication using API Key in Bearer token format
   - Implementation of `get_auth_header` method to generate appropriate authorization headers
-  - Connector auth type: `ConnectorAuthType::BodyKey` with API key
+  - Connector auth type: `ConnectorAuthType::HeaderKey` with API key
 - **Error Handling**:
   - Handle authentication errors (invalid key, expired token)
   - Map error responses to appropriate Hyperswitch error types

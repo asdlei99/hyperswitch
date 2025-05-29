@@ -37,16 +37,15 @@ use hyperswitch_interfaces::{
     types::{self, Response},
     webhooks,
 };
-use masking::{ExposeInterface, Mask};
+use masking::{ExposeInterface};
 use transformers as monei;
 
 use crate::{constants::headers, types::ResponseRouterData, utils, utils::RefundsRequestData};
 
-// MONEI Base URLs and endpoints
-pub const BASE_URL: &str = "https://api.monei.com/v1";
-pub const PAYMENTS_URL: &str = "/payments";
-pub const CAPTURES_URL: &str = "/captures";
-pub const REFUNDS_URL: &str = "/refunds";
+pub const PAYMENTS_URL: &str = "payments";
+pub const CAPTURE_SUFFIX: &str = "capture";
+pub const REFUND_SUFFIX: &str = "refund";
+pub const CANCEL_SUFFIX: &str = "cancel";
 
 #[derive(Clone)]
 pub struct Monei {
@@ -84,6 +83,20 @@ impl<Flow, Request, Response> ConnectorCommonExt<Flow, Request, Response> for Mo
 where
     Self: ConnectorIntegration<Flow, Request, Response>,
 {
+    // fn build_headers(
+    //     &self,
+    //     req: &RouterData<Flow, Request, Response>,
+    //     _connectors: &Connectors,
+    // ) -> CustomResult<Vec<(String, masking::Maskable<String>)>, errors::ConnectorError> {
+    //     let mut header = vec![(
+    //         headers::CONTENT_TYPE.to_string(),
+    //         self.get_content_type().to_string().into(),
+    //     )];
+    //     let mut api_key = self.get_auth_header(&req.connector_auth_type)?;
+    //     header.append(&mut api_key);
+    //     Ok(header)
+    // }
+    
     fn build_headers(
         &self,
         req: &RouterData<Flow, Request, Response>,
@@ -97,6 +110,9 @@ where
         header.append(&mut api_key);
         Ok(header)
     }
+
+   
+
 }
 
 impl ConnectorCommon for Monei {
@@ -117,19 +133,38 @@ impl ConnectorCommon for Monei {
         connectors.monei.base_url.as_ref()
     }
 
+    // fn get_auth_header(
+    //     &self,
+    //     auth_type: &ConnectorAuthType,
+    // ) -> CustomResult<Vec<(String, masking::Maskable<String>)>, errors::ConnectorError> {
+    //     let auth = monei::MoneiAuthType::try_from(auth_type)
+    //         .change_context(errors::ConnectorError::FailedToObtainAuthType)?;
+        
+    //     // Format the API key as a Bearer token for MONEI authentication
+
+    //     // let auth_value = format!("Bearer {}", auth.api_key.expose());
+        
+    //     // Ok(vec![(
+    //     //     headers::AUTHORIZATION.to_string(),
+            
+    //     //     auth_value.into_masked(),
+    //     // )])
+    //     Ok(vec![(
+    //         headers::AUTHORIZATION.to_string(),
+    //         format!("Bearer {}", auth.api_key.expose()).into(),
+    //     )])
+        
+    // }
+
     fn get_auth_header(
         &self,
         auth_type: &ConnectorAuthType,
     ) -> CustomResult<Vec<(String, masking::Maskable<String>)>, errors::ConnectorError> {
         let auth = monei::MoneiAuthType::try_from(auth_type)
             .change_context(errors::ConnectorError::FailedToObtainAuthType)?;
-        
-        // Format the API key as a Bearer token for MONEI authentication
-        let auth_value = format!("Bearer {}", auth.api_key.expose());
-        
         Ok(vec![(
             headers::AUTHORIZATION.to_string(),
-            auth_value.into_masked(),
+            format!("Bearer {}", auth.api_key.expose()).into(),
         )])
     }
 
@@ -393,15 +428,17 @@ impl ConnectorIntegration<Capture, PaymentsCaptureData, PaymentsResponseData> fo
 
     fn get_url(
         &self,
-        _req: &PaymentsCaptureRouterData,
+        req: &PaymentsCaptureRouterData,
         connectors: &Connectors,
     ) -> CustomResult<String, errors::ConnectorError> {
-        // For MONEI, captures are created by posting to the /captures endpoint
+        let connector_payment_id = req.request.connector_transaction_id.clone();
         Ok(format!(
-            "{}{}",
+            "{}{}{}{}",
             self.base_url(connectors),
-            CAPTURES_URL
-        ))
+            PAYMENTS_URL,
+            "/",
+            connector_payment_id
+        ) + CAPTURE_SUFFIX)
     }
 
     fn get_request_body(
@@ -409,14 +446,18 @@ impl ConnectorIntegration<Capture, PaymentsCaptureData, PaymentsResponseData> fo
         req: &PaymentsCaptureRouterData,
         _connectors: &Connectors,
     ) -> CustomResult<RequestContent, errors::ConnectorError> {
-        let payment_id = req.request.connector_transaction_id.clone();
+        // Convert the amount_to_capture to a minor unit before passing to convert_amount
+        let minor_amount = common_utils::types::MinorUnit::new(req.request.amount_to_capture);
         
-        // Convert the amount_to_capture (i64) to a string for the request
-        let amount = req.request.amount_to_capture.to_string();
+        // Convert to the string format expected by MONEI
+        let amount = utils::convert_amount(
+            self.amount_converter,
+            minor_amount,
+            req.request.currency,
+        )?;
         
-        // Create a simple JSON object with payment ID and amount
+        // Create a simple JSON object with only the amount
         let capture_request = serde_json::json!({
-            "payment": payment_id,
             "amount": amount
         });
         
@@ -471,7 +512,97 @@ impl ConnectorIntegration<Capture, PaymentsCaptureData, PaymentsResponseData> fo
     }
 }
 
-impl ConnectorIntegration<Void, PaymentsCancelData, PaymentsResponseData> for Monei {}
+impl ConnectorIntegration<Void, PaymentsCancelData, PaymentsResponseData> for Monei {
+    fn get_headers(
+        &self,
+        req: &RouterData<Void, PaymentsCancelData, PaymentsResponseData>,
+        connectors: &Connectors,
+    ) -> CustomResult<Vec<(String, masking::Maskable<String>)>, errors::ConnectorError> {
+        self.build_headers(req, connectors)
+    }
+
+    fn get_content_type(&self) -> &'static str {
+        self.common_get_content_type()
+    }
+
+    fn get_url(
+        &self,
+        req: &RouterData<Void, PaymentsCancelData, PaymentsResponseData>,
+        connectors: &Connectors,
+    ) -> CustomResult<String, errors::ConnectorError> {
+        let connector_payment_id = req.request.connector_transaction_id.clone();
+        Ok(format!(
+            "{}{}/{}{}",
+            self.base_url(connectors),
+            PAYMENTS_URL,
+            connector_payment_id,
+            CANCEL_SUFFIX
+        ))
+    }
+
+    fn get_request_body(
+        &self,
+        req: &RouterData<Void, PaymentsCancelData, PaymentsResponseData>,
+        _connectors: &Connectors,
+    ) -> CustomResult<RequestContent, errors::ConnectorError> {
+        let cancel_reason = req.request.cancellation_reason.clone();
+        
+        let cancel_request = if let Some(reason) = cancel_reason {
+            serde_json::json!({
+                "cancellationReason": reason
+            })
+        } else {
+            serde_json::json!({})
+        };
+        
+        Ok(RequestContent::Json(Box::new(cancel_request)))
+    }
+
+    fn build_request(
+        &self,
+        req: &RouterData<Void, PaymentsCancelData, PaymentsResponseData>,
+        connectors: &Connectors,
+    ) -> CustomResult<Option<Request>, errors::ConnectorError> {
+        Ok(Some(
+            RequestBuilder::new()
+                .method(Method::Post)
+                .url(&types::PaymentsVoidType::get_url(self, req, connectors)?)
+                .attach_default_headers()
+                .headers(types::PaymentsVoidType::get_headers(self, req, connectors)?)
+                .set_body(types::PaymentsVoidType::get_request_body(
+                    self, req, connectors,
+                )?)
+                .build(),
+        ))
+    }
+
+    fn handle_response(
+        &self,
+        data: &RouterData<Void, PaymentsCancelData, PaymentsResponseData>,
+        event_builder: Option<&mut ConnectorEvent>,
+        res: Response,
+    ) -> CustomResult<RouterData<Void, PaymentsCancelData, PaymentsResponseData>, errors::ConnectorError> {
+        let response: monei::MoneiPaymentsResponse = res
+            .response
+            .parse_struct("Monei PaymentsCancelResponse")
+            .change_context(errors::ConnectorError::ResponseDeserializationFailed)?;
+        event_builder.map(|i| i.set_response_body(&response));
+        router_env::logger::info!(connector_response=?response);
+        RouterData::try_from(ResponseRouterData {
+            response,
+            data: data.clone(),
+            http_code: res.status_code,
+        })
+    }
+
+    fn get_error_response(
+        &self,
+        res: Response,
+        event_builder: Option<&mut ConnectorEvent>,
+    ) -> CustomResult<ErrorResponse, errors::ConnectorError> {
+        self.build_error_response(res, event_builder)
+    }
+}
 
 impl ConnectorIntegration<Execute, RefundsData, RefundsResponseData> for Monei {
     fn get_headers(
@@ -488,14 +619,16 @@ impl ConnectorIntegration<Execute, RefundsData, RefundsResponseData> for Monei {
 
     fn get_url(
         &self,
-        _req: &RefundsRouterData<Execute>,
+        req: &RefundsRouterData<Execute>,
         connectors: &Connectors,
     ) -> CustomResult<String, errors::ConnectorError> {
-        // For MONEI, refunds are created by posting to the /refunds endpoint
+        let connector_payment_id = req.request.connector_transaction_id.clone();
         Ok(format!(
-            "{}{}",
+            "{}{}/{}{}",
             self.base_url(connectors),
-            REFUNDS_URL
+            PAYMENTS_URL,
+            connector_payment_id,
+            REFUND_SUFFIX
         ))
     }
 
@@ -580,12 +713,13 @@ impl ConnectorIntegration<RSync, RefundsData, RefundsResponseData> for Monei {
         req: &RefundSyncRouterData,
         connectors: &Connectors,
     ) -> CustomResult<String, errors::ConnectorError> {
-        // For MONEI, refund sync involves fetching a specific refund by its ID
         let refund_id = req.request.get_connector_refund_id()?;
+        let connector_payment_id = req.request.connector_transaction_id.clone();
         Ok(format!(
-            "{}{}/{}",
+            "{}{}/{}/refunds/{}",
             self.base_url(connectors),
-            REFUNDS_URL,
+            PAYMENTS_URL,
+            connector_payment_id,
             refund_id
         ))
     }
