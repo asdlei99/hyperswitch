@@ -29,20 +29,22 @@ const successfulThreeDSTestCardDetails = {
 };
 
 const payment_method_data_no3ds = {
-  card: {
-    last4: "4406",
-    card_type: "CREDIT",
-    card_network: "Visa",
-    card_issuer: "STRIPE PAYMENTS UK LIMITED",
-    card_issuing_country: "UNITEDKINGDOM",
-    card_isin: "424242",
-    card_extended_bin: null,
-    card_exp_month: "12",
-    card_exp_year: "34",
-    card_holder_name: "Test User",
-    payment_checks: null,
-    authentication_data: null,
-  },
+  card:
+  {
+    "authentication_data": null,
+    "card_exp_month": "12",
+    "card_exp_year": "34",
+    "card_extended_bin": null,
+    "card_holder_name": "Test User",
+    "card_isin": "444444",
+    "card_issuer": null,
+    "card_issuing_country": null,
+    "card_network": null,
+    "card_type": null,
+    "last4": "4414",
+    "payment_checks": null
+  }
+  ,
   billing: null,
 };
 
