@@ -10,15 +10,15 @@ pub struct NordeaRouterData<T> {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NordeaOAuthRequest {
     account_list: Option<String>,
-    /// Parameter with possible values: BANKID_NO (NO only: BankID Norway), 
-    /// MTA_NO (NO only: Nordea ID NO - Online), BANKID_SE (SE only: BankIdSe), 
-    /// CARD_RDR (SE only: Talking Card Reader), MTA (FI only: Nordea ID FI - Online), 
-    /// MITID (DK only: MitID), MTA_QR (FI only: Nordea ID QR code), MTA_DK (DK only: Nordea ID DK), 
+    /// Parameter with possible values: BANKID_NO (NO only: BankID Norway),
+    /// MTA_NO (NO only: Nordea ID NO - Online), BANKID_SE (SE only: BankIdSe),
+    /// CARD_RDR (SE only: Talking Card Reader), MTA (FI only: Nordea ID FI - Online),
+    /// MITID (DK only: MitID), MTA_QR (FI only: Nordea ID QR code), MTA_DK (DK only: Nordea ID DK),
     /// QRT_DK (DK only: Nordea ID device DK)
     authentication_method: Option<NordeaAuthenticationMethod>,
     /// Country is a mandatory parameter with possible values FI, DK, NO or SE
     country: api_models::enums::CountryAlpha2,
-    /// Duration of access authorization in minutes. range: 1 to 259200 minutes (180 days). 
+    /// Duration of access authorization in minutes. range: 1 to 259200 minutes (180 days).
     /// Duration should be left empty if the request includes PAYMENTS_SINGLE_SCA scope.
     duration: Option<i32>,
     /// Language of message that will be displayed to client of bankId mobile app, ISO639-1 and 639-2
@@ -33,7 +33,7 @@ pub struct NordeaOAuthRequest {
     /// If the request includes PAYMENTS_SINGLE_SCA scope, skip_account_selection parameter should be set to true.
     skip_account_selection: Option<bool>,
     /// The OAuth2 state parameter. This is a nonce and should be used to prevent CSRF attacks.
-    state: Secret<String>
+    state: Secret<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
