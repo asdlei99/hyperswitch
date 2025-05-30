@@ -342,10 +342,10 @@ impl ConnectorCommon for Nordea {
                 .and_then(|failure| failure.code.clone())
                 .unwrap_or(NO_ERROR_CODE.to_string()),
             message: get_error_data(response.error.as_ref())
-                .and_then(|failure| failure.failure_type.clone())
+                .and_then(|failure| failure.description.clone())
                 .unwrap_or(NO_ERROR_MESSAGE.to_string()),
             reason: get_error_data(response.error.as_ref())
-                .and_then(|failure| failure.description.clone()),
+                .and_then(|failure| failure.failure_type.clone()),
             attempt_status: None,
             connector_transaction_id: None,
             network_decline_code: None,
