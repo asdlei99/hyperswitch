@@ -88,7 +88,7 @@ impl Nordea {
 
     pub fn generate_digest(&self, payload: &[u8]) -> String {
         let payload_digest = digest::digest(&digest::SHA256, &payload);
-        consts::BASE64_ENGINE.encode(payload_digest)
+        format!("sha-256={}", consts::BASE64_ENGINE.encode(payload_digest))
     }
 
     pub fn generate_digest_from_request(&self, payload: &RequestContent) -> String {
@@ -98,7 +98,14 @@ impl Nordea {
                 let json_value = form_data.masked_serialize().unwrap_or_default();
                 if let serde_json::Value::Object(map) = json_value {
                     map.iter()
-                        .map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or("")))
+                        .map(|(k, v)| {
+                            // Remove quotes from string values
+                            let value = match v {
+                                serde_json::Value::String(s) => s.to_string(),
+                                _ => v.to_string(),
+                            };
+                            format!("{}={}", k, value)
+                        })
                         .collect::<Vec<_>>()
                         .join("&")
                         .into_bytes()
@@ -134,7 +141,7 @@ impl Nordea {
         ) {
             let digest = signature_params.payload_digest.unwrap_or("");
             normalized_string.push_str(&format!(
-                "\ncontent-type: {}\ndigest: sha-256={}",
+                "\ncontent-type: {}\ndigest: {}",
                 signature_params.content_type, digest
             ));
             REQUEST_WITH_CONTENT_HEADERS
@@ -269,7 +276,7 @@ where
             // Add Digest header
             required_headers.push((
                 "Digest".to_string(),
-                format!("sha-256={}", sha256_digest).into_masked(),
+                format!("{}", sha256_digest).into_masked(),
             ));
 
             let signature = self.generate_signature(
