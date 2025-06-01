@@ -634,7 +634,7 @@ describe("Corner cases", () => {
       const commonData = getConnectorDetails(globalState.get("commons"))[
         "card_pm"
       ]["RefundGreaterAmount"];
-      
+
       const newData = {
         ...data,
         Response: utils.getConnectorFlowDetails(
