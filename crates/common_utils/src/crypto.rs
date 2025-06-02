@@ -337,7 +337,7 @@ pub struct Ed25519;
 impl VerifySignature for Ed25519 {
     fn verify_signature(
         &self,
-        secret: &[u8],    
+        secret: &[u8],
         signature: &[u8], // ED25519 signature bytes (must be 64 bytes)
         msg: &[u8],       // Message that was signed
     ) -> CustomResult<bool, errors::CryptoError> {
